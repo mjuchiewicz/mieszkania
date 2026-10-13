@@ -1,0 +1,27 @@
+# Ustawienia scrapera. Filtry ofert (cena, metraż, pokoje, dzielnice)
+# ustawiasz na stronie — tutaj tylko wstępne zawężenie tego, co w ogóle pobieramy.
+
+city: wroclaw
+
+# Wstępny filtr pobierania (zostaw puste = bez limitu).
+# Szerokie widełki = więcej ofert na stronie do przefiltrowania.
+prefilter:
+  price_max: 1500000     # zł
+  price_min: 200000      # zł
+  area_min: 20           # m2
+
+# Które portale włączone (true/false)
+sources:
+  otodom: true
+  olx: true
+  gratka: true
+  morizon: false         # to samo co gratka (wspólna baza ogłoszeń)
+  nieruchomosci_online: true
+  domiporta: true
+
+# Bezpiecznik: maks. liczba stron na portal w jednym przebiegu.
+# Scrapery pobierają wszystko do końca wyników — limit tylko na wypadek błędu.
+max_pages: 300
+
+# Po ilu dniach od zniknięcia z portali oferta wypada z listy
+drop_after_days: 14

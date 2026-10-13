@@ -1,0 +1,64 @@
+name: Pobieranie ofert
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"   # co 2 godziny (czas UTC)
+  workflow_dispatch:
+    inputs:
+      max_pages:
+        description: "Maks. liczba stron na portal (puste = z config.yaml)"
+        required: false
+        default: ""
+      sources:
+        description: "Tylko wybrane portale, po przecinku (puste = wszystkie włączone)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalacja zależności
+        run: pip install -r requirements.txt
+
+      - name: Pobieranie ofert
+        env:
+          MAX_PAGES: ${{ github.event.inputs.max_pages }}
+          SOURCES: ${{ github.event.inputs.sources }}
+        run: |
+          ARGS=""
+          if [ -n "$MAX_PAGES" ]; then ARGS="$ARGS --max-pages $MAX_PAGES"; fi
+          if [ -n "$SOURCES" ]; then ARGS="$ARGS --sources $SOURCES"; fi
+          python -m scraper.main $ARGS
+
+      - name: Zapis zmian w repozytorium
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data/
+          if git diff --cached --quiet; then
+            echo "Brak zmian w danych."
+            exit 0
+          fi
+          git commit -m "Aktualizacja ofert $(date -u +'%Y-%m-%d %H:%M') UTC"
+          for i in 1 2 3; do
+            git pull --rebase -X theirs origin "${GITHUB_REF_NAME}" && git push && exit 0
+            sleep 5
+          done
+          echo "Nie udało się wypchnąć zmian" >&2
+          exit 1

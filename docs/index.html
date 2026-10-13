@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="pl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mieszkania Wrocław</title>
+  <meta name="description" content="Oferty sprzedaży mieszkań we Wrocławiu z wielu portali w jednym miejscu.">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%A0%3C/text%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">🏠</span>
+        <div>
+          <h1>Mieszkania Wrocław</h1>
+          <div class="sub" id="updated">wczytywanie…</div>
+        </div>
+      </div>
+      <div class="topbar-right">
+        <button type="button" id="warnBtn" class="warn-btn" hidden></button>
+      </div>
+    </div>
+    <div id="warnPanel" class="warn-panel" hidden></div>
+  </header>
+
+  <div class="layout">
+    <aside id="filters" class="filters" aria-label="Filtry">
+      <div class="filters-head">
+        <h2>Filtry</h2>
+        <button type="button" class="icon-btn only-mobile" id="closeFilters" aria-label="Zamknij filtry">✕</button>
+      </div>
+
+      <div class="filters-body">
+        <div class="f-group">
+          <label class="f-label" for="q">Szukaj</label>
+          <input type="search" id="q" placeholder="np. balkon, Kromera, garaż" autocomplete="off">
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Cena (zł)</span>
+          <div class="range">
+            <input type="text" inputmode="numeric" id="pmin" placeholder="od" aria-label="Cena od">
+            <span>–</span>
+            <input type="text" inputmode="numeric" id="pmax" placeholder="do" aria-label="Cena do">
+          </div>
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Metraż (m²)</span>
+          <div class="range">
+            <input type="text" inputmode="decimal" id="amin" placeholder="od" aria-label="Metraż od">
+            <span>–</span>
+            <input type="text" inputmode="decimal" id="amax" placeholder="do" aria-label="Metraż do">
+          </div>
+        </div>
+
+        <div class="f-group">
+          <label class="f-label" for="ppm">Cena za m² maks. (zł)</label>
+          <input type="text" inputmode="numeric" id="ppm" placeholder="np. 13000">
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Pokoje</span>
+          <div class="chips" id="roomsChips"></div>
+        </div>
+
+        <div class="f-group">
+          <label class="f-label" for="newDays">Dodane</label>
+          <select id="newDays">
+            <option value="0">kiedykolwiek</option>
+            <option value="1">w ciągu ostatniej doby</option>
+            <option value="3">w ostatnich 3 dniach</option>
+            <option value="7">w ostatnim tygodniu</option>
+            <option value="14">w ostatnich 2 tygodniach</option>
+            <option value="30">w ostatnim miesiącu</option>
+          </select>
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Dzielnica / osiedle <span class="muted" id="distCount"></span></span>
+          <input type="search" id="distSearch" placeholder="szukaj dzielnicy…" autocomplete="off" class="small-input">
+          <div class="checklist" id="districtList"></div>
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Rynek</span>
+          <div class="chips" id="marketChips"></div>
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Sprzedający</span>
+          <div class="chips" id="sellerChips"></div>
+        </div>
+
+        <div class="f-group">
+          <span class="f-label">Portale</span>
+          <div class="chips" id="sourceChips"></div>
+        </div>
+
+        <div class="f-group switches">
+          <label class="switch"><input type="checkbox" id="hideDups"> <span>Ukryj duplikaty z innych portali</span></label>
+          <label class="switch"><input type="checkbox" id="showHidden"> <span>Pokaż ukryte przeze mnie <span class="muted" id="hiddenCount"></span></span></label>
+          <label class="switch"><input type="checkbox" id="showInactive"> <span>Pokaż nieaktualne (zniknęły z portali)</span></label>
+        </div>
+
+        <button type="button" class="btn btn-ghost wide" id="clearFilters">Wyczyść filtry</button>
+      </div>
+
+      <div class="filters-foot only-mobile">
+        <button type="button" class="btn btn-primary wide" id="applyFilters">Pokaż wyniki</button>
+      </div>
+    </aside>
+    <div class="backdrop" id="backdrop" hidden></div>
+
+    <main class="results">
+      <div class="toolbar">
+        <div class="tabs" role="tablist">
+          <button type="button" role="tab" class="tab" data-tab="all" id="tabAll">Wszystkie</button>
+          <button type="button" role="tab" class="tab" data-tab="fav" id="tabFav">★ Ulubione <span class="pill" id="favCount">0</span></button>
+        </div>
+        <div class="toolbar-right">
+          <button type="button" class="btn btn-ghost only-mobile" id="openFilters">Filtry <span class="pill" id="activeFilterCount" hidden></span></button>
+          <select id="sort" aria-label="Sortowanie">
+            <option value="newest">Najnowsze</option>
+            <option value="price_asc">Cena: od najniższej</option>
+            <option value="price_desc">Cena: od najwyższej</option>
+            <option value="ppm_asc">Cena za m²: od najniższej</option>
+            <option value="area_desc">Metraż: od największego</option>
+            <option value="area_asc">Metraż: od najmniejszego</option>
+          </select>
+          <div class="seg" role="group" aria-label="Widok">
+            <button type="button" data-view="list" class="seg-btn">Lista</button>
+            <button type="button" data-view="map" class="seg-btn">Mapa</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-count" id="resultCount" aria-live="polite"></div>
+
+      <div id="listView">
+        <div class="grid" id="grid"></div>
+        <div class="empty" id="empty" hidden></div>
+        <div class="more-wrap">
+          <button type="button" class="btn btn-ghost" id="moreBtn" hidden>Pokaż więcej</button>
+        </div>
+        <div id="sentinel" aria-hidden="true"></div>
+      </div>
+
+      <div id="mapView" hidden>
+        <div id="map"></div>
+        <div class="map-note muted" id="mapNote"></div>
+      </div>
+    </main>
+  </div>
+
+  <footer class="footer muted">
+    Dane pobierane automatycznie z portali ogłoszeniowych. Ulubione, ukryte i obejrzane oferty zapisują się tylko w tej przeglądarce.
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
