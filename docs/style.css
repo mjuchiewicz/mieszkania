@@ -367,6 +367,9 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 @keyframes drawer-in { from { transform: translateX(24px); opacity: .6; } to { transform: none; opacity: 1; } }
 .scrim { position: fixed; inset: 0; z-index: 50; background: var(--scrim); animation: fade .2s; }
 .scrim.light { background: transparent; }
+/* Pasek filtrów (sticky, z-index 30) tworzy własny kontekst warstw, więc otwarty
+   w nim popover musiałby przebić scrim tylko razem z paskiem. */
+.filterbar:has(.pop:not([hidden])) { z-index: 55; }
 @keyframes fade { from { opacity: 0; } }
 
 /* ---------------------------------------------------------------- wyniki */
@@ -380,9 +383,6 @@ input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px;
 .fchip {
   display: inline-flex; align-items: center; gap: 4px; height: 30px; padding: 0 6px 0 11px;
   border-radius: 999px; background: var(--surface-2); border: 1px solid var(--line);
-/* Pasek filtrów (sticky, z-index 30) tworzy własny kontekst warstw, więc otwarty
-   w nim popover musiałby przebić scrim tylko razem z paskiem. */
-.filterbar:has(.pop:not([hidden])) { z-index: 55; }
   font-size: 13px; color: var(--text-2); max-width: 100%;
 }
 .fchip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
