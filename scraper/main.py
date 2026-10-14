@@ -45,6 +45,8 @@ LEGACY_LISTINGS_PATH = DATA_DIR / "listings.json"   # stary format (tylko sprzed
 LEGACY_META_PATH = DATA_DIR / "meta.json"           # układ sprzed miejscowości (tylko Wrocław)
 META_PATH = LEGACY_META_PATH                        # zgodność wsteczna (importy)
 CITIES_PATH = DATA_DIR / "cities.json"              # lista miejscowości dla strony
+FEEDS_DIR = ROOT / "feeds"                          # oferty pobrane poza chmurą (scraper/feed.py)
+DEFAULT_FEED_MAX_AGE_H = 6.0
 
 MAX_IMAGES = 1  # strona pokazuje tylko miniaturę
 MAX_DESCRIPTION = 400  # opis służy tylko do wyszukiwania po słowach
@@ -239,6 +241,83 @@ def run_source(name: str, module, config: dict, deal: str,
         return [], msg[:500]
 
 
+# ---------------------------------------------------------------- feeds (portal pobierany na komputerze)
+
+def feed_path(source: str, city: str, deal: str) -> Path:
+    return FEEDS_DIR / source / city / ("%s.json" % deal)
+
+
+def feed_sources(config: dict) -> Dict[str, dict]:
+    """Portale z `feeds:` w config.yaml: zamiast pobierać je tutaj, czytamy feeds/<portal>/…,
+    które wysyła komputer (python -m scraper.feed). {portal: {"max_age_hours": float, ...}}"""
+    out: Dict[str, dict] = {}
+    raw = config.get("feeds") or {}
+    if not isinstance(raw, dict):
+        return out
+    for name, opts in raw.items():
+        if opts is False or opts is None:
+            continue
+        opts = dict(opts) if isinstance(opts, dict) else {}
+        try:
+            opts["max_age_hours"] = float(opts.get("max_age_hours") or DEFAULT_FEED_MAX_AGE_H)
+        except (TypeError, ValueError):
+            opts["max_age_hours"] = DEFAULT_FEED_MAX_AGE_H
+        out[str(name)] = opts
+    return out
+
+
+def age_text(seconds: float) -> str:
+    """Przybliżony wiek po polsku: „40 min”, „7 godz.”, „3 dni”."""
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return "%d min" % minutes
+    hours = minutes // 60
+    if hours < 48:
+        return "%d godz." % hours
+    return "%d dni" % (hours // 24)
+
+
+def read_feed(name: str, city: str, deal: str, max_age_hours: float,
+              now: datetime) -> Tuple[List[dict], Optional[str], float, str, dict]:
+    """Oferty z feeds/<portal>/<miejscowość>/<typ>.json jak wynik run_source:
+    (oferty, błąd, czas pobierania, kiedy pobrano, dodatkowe pola meta).
+    Świeży i poprawny plik = udane pobranie; nieaktualny / brak = portal „nie działa”
+    (stare oferty zostają bez zmian, jak przy błędzie portalu)."""
+    path = feed_path(name, city, deal)
+    data = load_json(path, None)
+    extra: Dict[str, Any] = {"via": "komputer"}
+    now_s = iso(now)
+    if not isinstance(data, dict):
+        extra["status"] = "stale"
+        return [], "brak danych z komputera (pobiera je komputer, gdy jest włączony)", 0.0, now_s, extra
+    scraped = parse_iso(data.get("scraped_at"))
+    dt = float(data.get("duration_s") or 0.0)
+    if scraped is None:
+        extra["status"] = "stale"
+        return [], "nieprawidłowy plik danych z komputera", dt, now_s, extra
+    extra["scraped_at"] = iso(scraped)
+    age_s = (now - scraped).total_seconds()
+    if age_s > max_age_hours * 3600:
+        extra["status"] = "stale"
+        return [], ("dane z komputera sprzed %s (pobiera je komputer, gdy jest włączony)"
+                    % age_text(age_s)), dt, iso(scraped), extra
+    if data.get("status") != "ok":
+        err = str(data.get("error") or "nieznany błąd")
+        return [], ("komputer: %s" % err)[:500], dt, iso(scraped), extra
+    out: List[dict] = []
+    for d in data.get("listings") or []:
+        if not isinstance(d, dict) or not d.get("id") or not d.get("url"):
+            continue
+        d = dict(d)
+        d["id"] = str(d["id"])
+        d["source"] = d.get("source") or name
+        d["key"] = d.get("key") or "%s:%s" % (d["source"], d["id"])
+        d["deal"] = deal
+        d["_prepared"] = True
+        out.append(d)
+    return out, None, dt, iso(scraped), extra
+
+
 def _to_int(v: Any) -> Optional[int]:
     if v is None or v == "":
         return None
@@ -293,6 +372,12 @@ def _clean_features(d: dict) -> None:
         if isinstance(f, str) and f and f not in seen:
             seen.append(f)
     d["features"] = seen
+
+
+def prepare_listing(d: dict) -> dict:
+    """Pełne przygotowanie oferty z portalu przed scaleniem: cechy z całego opisu, potem przycięcie.
+    Te same kroki stosuje scraper/feed.py (OLX z komputera), więc dane są identyczne."""
+    return clean_listing(enrich_listing(dict(d)))
 
 
 def clean_listing(d: dict) -> dict:
@@ -358,7 +443,11 @@ def merge(
             if key in seen:
                 continue  # duplikat w obrębie jednego portalu/przebiegu
             seen.add(key)
-            d = clean_listing(enrich_listing(dict(d)))  # enrich widzi pełny opis
+            if d.get("_prepared"):  # z pliku feeds/ — już przygotowana (prepare_listing) na komputerze
+                d = dict(d)
+                d.pop("_prepared", None)
+            else:
+                d = prepare_listing(d)  # enrich widzi pełny opis
             prev = state.get(key)
             if prev is None:
                 rec = d
@@ -728,6 +817,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     migrate_legacy()
 
     start = utc_now()
+    fed = feed_sources(config)
+    if fed:
+        log.info("Z komputera (feeds/): %s", ", ".join(sorted(n for n in fed if n in to_run)) or "—")
 
     # --- które (portal, miejscowość, typ) uruchamiamy
     modules: Dict[str, Any] = {}
@@ -762,13 +854,21 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                     plan[name].append((city, deal, loc))
 
     # --- pobieranie: portale równolegle, miejscowości i typy jednego portalu po kolei
-    results: Dict[Tuple[str, str, str], Tuple[List[dict], Optional[str], float, str]] = {}
+    results: Dict[Tuple[str, str, str], Tuple[List[dict], Optional[str], float, str, dict]] = {}
 
     def run_all_tasks(name: str) -> None:
         for i, (city, deal, loc) in enumerate(plan[name]):
             key = (name, city["slug"], deal)
+            if name in fed:
+                # portal pobierany na komputerze — tu tylko czytamy jego plik (bez łączenia z portalem)
+                items, err, dt, finished, extra = read_feed(name, city["slug"], deal,
+                                                            fed[name]["max_age_hours"], start)
+                results[key] = (items, err, dt, finished, extra)
+                log.info("[%s/%s/%s] z komputera: %s, %d ofert", name, city["slug"], deal,
+                         err or "ok", len(items))
+                continue
             if name in import_errors:
-                results[key] = ([], import_errors[name], 0.0, iso(utc_now()))
+                results[key] = ([], import_errors[name], 0.0, iso(utc_now()), {})
                 continue
             if i:
                 time.sleep(PAUSE_BETWEEN_DEALS)
@@ -776,7 +876,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             log.info("[%s/%s/%s] start", name, city["slug"], deal)
             items, err = run_source(name, modules[name], config, deal, loc)
             dt = round(time.time() - t0, 1)
-            results[key] = (items, err, dt, iso(utc_now()))
+            results[key] = (items, err, dt, iso(utc_now()), {})
             log.info("[%s/%s/%s] %s: %d ofert w %.1fs", name, city["slug"], deal,
                      "BŁĄD" if err else "ok", len(items), dt)
 
@@ -823,11 +923,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             for name in to_run:
                 if (name, slug, deal) not in results:
                     continue
-                items, err, dt, finished = results[(name, slug, deal)]
+                items, err, dt, finished, extra = results[(name, slug, deal)]
                 prev = prev_src_meta.get(name) or {}
                 info = {"count": len(items), "duration_s": dt, "last_run": finished}
+                if extra.get("via"):
+                    info["via"] = extra["via"]
+                    if extra.get("scraped_at"):
+                        info["scraped_at"] = extra["scraped_at"]
                 if err:
-                    info.update(status="error", error=err, last_ok=prev.get("last_ok"))
+                    # stale = dane z komputera są nieaktualne (komputer wyłączony), a nie awaria portalu
+                    info.update(status=extra.get("status") or "error", error=err, last_ok=prev.get("last_ok"))
                     failed.add(name)
                 elif not items and (name in known_sources or slug == DEFAULT_CITY):
                     # 0 ofert bez wyjątku tam, gdzie wcześniej były, to prawie na pewno

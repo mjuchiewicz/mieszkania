@@ -45,6 +45,14 @@ sources:
   nieruchomosci_online: true
   domiporta: true
 
+# Portale pobierane na komputerze zamiast w chmurze. OLX blokuje serwery GitHuba,
+# więc pobiera go komputer właścicielki (co godzinę, gdy jest włączony i na zasilaczu —
+# python -m scraper.feed install) i wysyła pliki feeds/olx/. Przebieg w chmurze czyta
+# te pliki; starsze niż max_age_hours = OLX „nieaktualny” (stare oferty zostają bez zmian).
+# on_battery: true — pobieraj także na baterii.
+feeds:
+  olx: {max_age_hours: 6, on_battery: false}
+
 # Bezpiecznik: maks. liczba stron na portal w jednym przebiegu.
 # Scrapery pobierają wszystko do końca wyników — limit tylko na wypadek błędu.
 max_pages: 300

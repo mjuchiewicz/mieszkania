@@ -96,11 +96,30 @@ Na ten adres (`GMAIL_USER`) idą też alerty, w których nie wpisano żadnego ad
 - W jednym mailu jest do 25 ofert; resztę zobaczysz na stronie (link w mailu).
 - Przy „Okolicy” oferty bez dokładnego adresu sprawdzamy po ulicy lub osiedlu — w mailu mają dopisek
   „lokalizacja przybliżona”. Oferty bez żadnej lokalizacji nie trafiają do alertów z okolicą.
+- Sprawdzenie, czy maile w ogóle dochodzą: **Actions** → **Mail testowy** → **Run workflow**.
+  Przyjdzie jeden przykładowy mail (temat zaczyna się od „[TEST]”) na adres z `GMAIL_USER`.
 - Gdy coś nie działa: **Actions** → ostatnie uruchomienie → krok **Powiadomienia e-mail**.
   Komunikat „Gmail odrzucił logowanie” = popraw `GMAIL_USER` / `GMAIL_APP_PASSWORD`.
 - Test bez wysyłania (na komputerze): zapisz kody w pliku (jeden na linię, `ALERT_NAZWA=kod`) i uruchom
   `.venv/bin/python -m scraper.alerts --dry-run --alerts-file plik.txt --since 2026-10-14T00:00:00Z --preview-dir podglad`
   — w folderze `podglad` będzie podgląd maili.
+
+## OLX z komputera
+
+OLX blokuje serwery GitHuba, więc oferty z OLX pobiera **Twój Mac**: co godzinę, w tle,
+gdy jest włączony, podłączony do zasilacza i ma internet (na baterii przebieg jest pomijany).
+Wyniki wysyła do repozytorium (folder `feeds/olx/`), a najbliższe automatyczne pobieranie
+dołącza je do strony.
+
+- **Mac musi być czasem włączony.** Gdy jest wyłączony dłużej niż 6 godzin, OLX na stronie
+  jest oznaczony jako „nieaktualne” — wcześniejsze oferty z OLX zostają, nowe nie dochodzą.
+- Zadanie działa na osobnej kopii repozytorium (`~/Library/Application Support/mieszkania-olx/`),
+  więc nie przeszkadza w pracy na tym folderze. Log: `~/Library/Logs/mieszkania-olx.log`.
+- Stan: `.venv/bin/python -m scraper.feed status`, uruchomienie od razu: `... now`.
+- **Wyłączenie:** `.venv/bin/python -m scraper.feed uninstall`
+  (albo usuń plik `~/Library/LaunchAgents/pl.mieszkania.olx.plist` i uruchom ponownie komputer).
+  Ponowne włączenie: `.venv/bin/python -m scraper.feed install`.
+- Także na baterii: w `config.yaml` ustaw `on_battery: true` przy `feeds: olx`.
 
 ## Zmiana ustawień
 

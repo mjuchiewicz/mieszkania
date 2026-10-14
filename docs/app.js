@@ -1387,24 +1387,31 @@
     var btn = $("statusBtn");
     btn.classList.toggle("has-warn", bad.length > 0);
     var txt = last ? esc(ago(last)) : "Brak aktualizacji";
-    if (bad.length) txt = bad.length === 1 ? "1 portal nie działa" : bad.length + " " + plural(bad.length, "portal", "portale", "portali") + ' <span class="hide-sm">nie działa</span>';
+    // stale = portal pobierany na komputerze (OLX), którego dane są nieaktualne — to nie awaria
+    var broken = bad.filter(function (k) { return srcs[k].status !== "stale"; });
+    var stale = bad.filter(function (k) { return srcs[k].status === "stale"; });
+    if (broken.length) txt = broken.length === 1 ? "1 portal nie działa" : broken.length + " " + plural(broken.length, "portal", "portale", "portali") + ' <span class="hide-sm">nie działa</span>';
+    else if (stale.length) txt = txt + ' <span class="hide-sm">· ' + esc(stale.map(srcName).join(", ")) + " nieaktualny</span>";
     $("updated").innerHTML = txt;
     btn.title = last ? "Ostatnia aktualizacja: " + fmtDate(last) : "";
     var rows = names.map(function (k) {
       var s = srcs[k] || {};
       var ok = s.status === "ok";
       return "<li><span><b>" + esc(srcName(k)) + "</b>" +
-        (ok ? "" : ' <span class="small">' + esc(String(s.error || "").slice(0, 140)) + "</span>") + "</span>" +
+        (ok ? (s.via ? ' <span class="small">z komputera</span>' : "")
+          : ' <span class="small">' + esc(String(s.error || "").slice(0, 140)) + "</span>") + "</span>" +
         "<span>" + (ok
           ? nf.format(s.count || 0) + " " + plural(s.count || 0, "oferta", "oferty", "ofert")
-          : '<span class="err">nie działa</span>' + (s.last_ok ? ' <span class="small">· ostatnio ' + esc(ago(parseTs(s.last_ok))) + "</span>" : "")) +
+          : '<span class="err">' + (s.status === "stale" ? "nieaktualne" : "nie działa") + "</span>" +
+            (s.last_ok ? ' <span class="small">· ostatnio ' + esc(ago(parseTs(s.last_ok))) + "</span>" : "")) +
         "</span></li>";
     }).join("");
     var unsup = Object.keys(META.unsupported || {}).map(srcName).sort();
     $("statusPanel").innerHTML = "<h3>" + (last ? "Ostatnia aktualizacja: " + esc(fmtDate(last)) : "Jeszcze nie było aktualizacji") + "</h3>" +
       (rows ? "<ul>" + rows + "</ul>" : "") +
       (unsup.length ? '<div class="small">Nie obsługują tej miejscowości: ' + esc(unsup.join(", ")) + ".</div>" : "") +
-      (bad.length ? '<div class="small">Oferty pobrane wcześniej z niedziałających portali nadal są widoczne.</div>'
+      (bad.length ? '<div class="small">Oferty pobrane wcześniej z ' + (broken.length ? "niedziałających" : "nieaktualnych") + ' portali nadal są widoczne.' +
+          (stale.length ? " " + esc(stale.map(srcName).join(", ")) + " pobiera komputer, gdy jest włączony." : "") + '</div>'
         : '<div class="small">Oferty odświeżają się automatycznie kilka razy dziennie.</div>');
   }
 
