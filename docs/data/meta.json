@@ -1,7 +1,7 @@
 {
-  "last_run": "2026-10-14T10:18:10Z",
+  "last_run": "2026-10-14T11:03:32Z",
   "first_run": "2026-10-13T21:21:33Z",
-  "finished": "2026-10-14T10:48:39Z",
+  "finished": "2026-10-14T11:03:39Z",
   "drop_after_days": 14,
   "enabled_deals": [
     "sprzedaz",
@@ -125,10 +125,16 @@
       "label": "Pokoje",
       "file": "pokoj.json",
       "first_run": "2026-10-14T09:56:12Z",
-      "last_run": "2026-10-14T10:18:10Z",
+      "last_run": "2026-10-14T11:03:32Z",
       "total": 1055,
       "active": 1049,
       "dup_groups": 13,
+      "geo": {
+        "brak": 1,
+        "dokładna": 802,
+        "osiedle": 23,
+        "ulica": 229
+      },
       "sources": {
         "gratka": {
           "count": 39,
@@ -141,11 +147,11 @@
         },
         "nieruchomosci_online": {
           "count": 50,
-          "duration_s": 5.8,
-          "last_run": "2026-10-14T10:44:18Z",
+          "duration_s": 6.6,
+          "last_run": "2026-10-14T11:03:39Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-10-14T10:44:18Z",
+          "last_ok": "2026-10-14T11:03:39Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "olx": {

@@ -31,8 +31,9 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
+from scraper.features import enrich
 from scraper.geo import GEO_EXACT, geocode_listings
-from scraper.models import DEALS
+from scraper.models import BUILDING_TYPES, CONDITIONS, DEALS
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.yaml"
@@ -241,11 +242,49 @@ def trim_description(desc: Any) -> Optional[str]:
     return desc or None
 
 
+def enrich_listing(d: dict) -> dict:
+    """Uzupełnia cechy mieszkania z tekstu ogłoszenia (piętro, umeblowanie, stan,
+    typ budynku, udogodnienia). Wołane PRZED przycięciem opisu, żeby widzieć cały tekst.
+    Błąd w heurystyce nie może zepsuć przebiegu — wtedy zostaje oferta bez zmian."""
+    try:
+        return enrich(d)
+    except Exception as e:  # pragma: no cover - defensywnie
+        log.warning("cechy: nie udało się przeanalizować %s: %s", d.get("key"), e)
+        return d
+
+
+def _clean_features(d: dict) -> None:
+    """Normalizuje pola cech: złe typy / nieznane wartości -> None, cechy -> krótka lista."""
+    for k in ("floor_num", "floors_total"):
+        v = d.get(k)
+        if v is None:
+            continue
+        try:
+            d[k] = int(v)
+        except (TypeError, ValueError):
+            d[k] = None
+    if d.get("floors_total") is not None and d["floors_total"] < 0:
+        d["floors_total"] = None
+    if not isinstance(d.get("furnished"), bool):
+        d["furnished"] = None
+    if d.get("condition") not in CONDITIONS:
+        d["condition"] = None
+    if d.get("building_type") not in BUILDING_TYPES:
+        d["building_type"] = None
+    feats = d.get("features") or []
+    seen: List[str] = []
+    for f in feats if isinstance(feats, (list, tuple)) else []:
+        if isinstance(f, str) and f and f not in seen:
+            seen.append(f)
+    d["features"] = seen
+
+
 def clean_listing(d: dict) -> dict:
     """Przycina pola, żeby plik JSON był lekki."""
     imgs = [i for i in (d.get("images") or []) if isinstance(i, str) and i.startswith("http")]
     d["images"] = imgs[:MAX_IMAGES]
     d["description"] = trim_description(d.get("description"))
+    _clean_features(d)
     for k in ("price", "rent_extra", "deposit"):
         if k in d:
             d[k] = _to_int(d.get(k))
@@ -303,7 +342,7 @@ def merge(
             if key in seen:
                 continue  # duplikat w obrębie jednego portalu/przebiegu
             seen.add(key)
-            d = clean_listing(dict(d))
+            d = clean_listing(enrich_listing(dict(d)))  # enrich widzi pełny opis
             prev = state.get(key)
             if prev is None:
                 rec = d
@@ -556,7 +595,8 @@ def migrate_legacy() -> None:
 
 FIELD_ORDER = (
     "key", "source", "id", "deal", "url", "title", "price", "rent_extra", "deposit", "available_from",
-    "area", "rooms", "floor", "district", "street", "market", "seller", "build_year",
+    "area", "rooms", "floor", "floor_num", "floors_total", "furnished", "condition",
+    "building_type", "features", "district", "street", "market", "seller", "build_year",
     "images", "description", "lat", "lon", "geo", "created_at",
 ) + STATE_FIELDS
 

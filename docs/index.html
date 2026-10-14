@@ -42,9 +42,13 @@
 
       <nav class="deal-switch" id="dealSwitch" role="tablist" aria-label="Rodzaj ofert">
         <button type="button" role="tab" data-deal="sprzedaz">Kupno</button>
-        <button type="button" role="tab" data-deal="wynajem">Wynajem</button>
-        <button type="button" role="tab" data-deal="pokoj">Pokoje</button>
+        <button type="button" role="tab" data-deal="rent">Wynajem</button>
       </nav>
+      <!-- na telefonie wybór „mieszkanie / pokój” jest w nagłówku (nie zajmuje miejsca w przyklejonym pasku) -->
+      <div class="sub-switch sub-head" role="group" aria-label="Co wynająć" hidden>
+          <button type="button" data-sub="wynajem">Całe mieszkanie</button>
+          <button type="button" data-sub="pokoj">Pokój</button>
+        </div>
 
       <div class="head-right">
         <button type="button" class="status" id="statusBtn" aria-expanded="false">
@@ -63,6 +67,10 @@
 
   <div class="filterbar" id="filterbar">
     <div class="wrap fb-row">
+      <div class="sub-switch sub-bar" role="group" aria-label="Co wynająć" hidden>
+        <button type="button" data-sub="wynajem">Całe mieszkanie</button>
+        <button type="button" data-sub="pokoj">Pokój</button>
+      </div>
       <label class="search">
         <svg><use href="#i-search"/></svg>
         <input type="search" data-f="q" id="q" placeholder="Szukaj: ulica, osiedle, „balkon”…" autocomplete="off" aria-label="Szukaj">
@@ -75,6 +83,7 @@
         <button type="button" class="pill" data-open="rooms" id="pillRooms"><span class="pill-txt">Pokoje</span><svg class="chev"><use href="#i-chev"/></svg></button>
         <button type="button" class="pill" data-open="area" id="pillArea"><span class="pill-txt">Metraż</span><svg class="chev"><use href="#i-chev"/></svg></button>
         <button type="button" class="pill" data-open="dist" id="pillDist"><span class="pill-txt">Dzielnica</span><svg class="chev"><use href="#i-chev"/></svg></button>
+        <button type="button" class="pill pill-floor" data-open="floor" id="pillFloor"><span class="pill-txt">Piętro</span><svg class="chev"><use href="#i-chev"/></svg></button>
         <button type="button" class="pill pill-more only-desktop" data-open="more" id="pillMore">
           <svg><use href="#i-sliders"/></svg>Więcej filtrów<span class="pill-count" id="moreCount" hidden></span>
         </button>
@@ -111,6 +120,17 @@
       <div class="dist-list"></div>
       <div class="pop-foot"><button type="button" class="btn-text" data-reset="districts">Wyczyść</button><button type="button" class="btn-primary" data-close data-showbtn>Pokaż</button></div>
     </div>
+    <div class="pop" id="pop-floor" data-pop="floor" hidden>
+      <div class="pop-head"><h3>Piętro</h3><button type="button" class="icon-btn" data-close aria-label="Zamknij"><svg><use href="#i-x"/></svg></button></div>
+      <div class="range">
+        <label><span>od</span><input type="text" inputmode="numeric" data-f="fmin" placeholder="0 = parter"></label>
+        <label><span>do</span><input type="text" inputmode="numeric" data-f="fmax" placeholder="np. 4"></label>
+      </div>
+      <label class="toggle"><input type="checkbox" data-b="noGround"><span class="tg"></span><span>Bez parteru</span></label>
+      <label class="toggle"><input type="checkbox" data-b="noTop"><span class="tg"></span><span>Bez ostatniego piętra</span></label>
+      <p class="hint">Zakres „od–do” pokazuje tylko oferty z podanym piętrem. „Bez parteru” i „bez ostatniego” ukrywają tylko te, o których wiemy, że są na parterze lub ostatnim piętrze.</p>
+      <div class="pop-foot"><button type="button" class="btn-text" data-reset="fmin,fmax,noGround,noTop">Wyczyść</button><button type="button" class="btn-primary" data-close data-showbtn>Pokaż</button></div>
+    </div>
   </div>
 
   <!-- panel „Więcej filtrów”: z prawej na komputerze, od dołu na telefonie (tam zawiera wszystkie filtry) -->
@@ -144,9 +164,36 @@
         <input type="search" class="dist-search" placeholder="Szukaj dzielnicy…" autocomplete="off" aria-label="Szukaj dzielnicy">
         <div class="dist-list"></div>
       </section>
+      <section class="fsec floor-sec" data-sec="floor">
+        <h4>Piętro</h4>
+        <div class="range">
+          <label><span>od</span><input type="text" inputmode="numeric" data-f="fmin" placeholder="0 = parter"></label>
+          <label><span>do</span><input type="text" inputmode="numeric" data-f="fmax" placeholder="np. 4"></label>
+        </div>
+        <label class="toggle"><input type="checkbox" data-b="noGround"><span class="tg"></span><span>Bez parteru</span></label>
+        <label class="toggle"><input type="checkbox" data-b="noTop"><span class="tg"></span><span>Bez ostatniego piętra</span></label>
+        <p class="hint">Zakres „od–do” pokazuje tylko oferty z podanym piętrem. „Bez parteru” i „bez ostatniego” ukrywają tylko te, o których wiemy, że są na parterze lub ostatnim piętrze.</p>
+      </section>
       <section class="fsec" data-sec="ppm">
         <h4>Cena za m², maks.</h4>
         <div class="range one"><label><span>do</span><input type="text" inputmode="numeric" data-f="ppm" placeholder="np. 13 000 zł"></label></div>
+      </section>
+      <section class="fsec" data-sec="feat">
+        <h4>Udogodnienia</h4>
+        <div class="seg-chips" data-chips="feat"></div>
+        <p class="hint">Cechy odczytujemy z ogłoszeń — oferta bez wzmianki o np. balkonie nie pojawi się przy tym filtrze.</p>
+      </section>
+      <section class="fsec" data-sec="furn">
+        <h4>Umeblowane</h4>
+        <div class="seg-chips" data-chips="furn"></div>
+      </section>
+      <section class="fsec" data-sec="cond">
+        <h4>Stan mieszkania</h4>
+        <div class="seg-chips" data-chips="cond"></div>
+      </section>
+      <section class="fsec" data-sec="btype">
+        <h4>Typ budynku</h4>
+        <div class="seg-chips" data-chips="btype"></div>
       </section>
       <section class="fsec" data-sec="days">
         <h4>Dodane</h4>

@@ -631,3 +631,44 @@ def enrich(d: dict) -> dict:
     existing = list(out.get("features") or [])
     out["features"] = _order_features(existing + detect_features(text, deal))
     return out
+
+
+# --------------------------------------------------------------------------- backfill
+
+def _backfill(deals: List[str]) -> None:
+    """Jednorazowo uzupełnia cechy w istniejących docs/data/<typ>.json (bez pobierania ofert).
+    Opisy są tam już przycięte — analizujemy to, co jest."""
+    from collections import Counter
+
+    from scraper.main import _clean_features, deal_path, load_state, save_state
+
+    for deal in deals:
+        if not deal_path(deal).exists():
+            continue
+        state = load_state(deal)
+        listings = []
+        stats: Counter = Counter()
+        for rec in state.values():
+            new = enrich(rec)
+            _clean_features(new)
+            for k in ("floor_num", "furnished", "condition", "building_type"):
+                if rec.get(k) is None and new.get(k) is not None:
+                    stats[k] += 1
+            if len(new.get("features") or []) > len(rec.get("features") or []):
+                stats["features"] += 1
+            listings.append(new)
+        save_state(deal, listings)
+        print("%s: %d ofert, uzupełniono: %s" % (
+            deal, len(listings), ", ".join("%s=%d" % kv for kv in sorted(stats.items())) or "nic"))
+
+
+if __name__ == "__main__":
+    import sys
+
+    from scraper.models import DEALS as _DEALS
+
+    args = sys.argv[1:]
+    if not args or args[0] != "--backfill":
+        print("Użycie: python -m scraper.features --backfill [sprzedaz wynajem pokoj]")
+        sys.exit(2)
+    _backfill(args[1:] or list(_DEALS))

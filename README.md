@@ -1,6 +1,6 @@
 # Mieszkania Wrocław
 
-Strona, która co 4 godziny sama zbiera oferty mieszkań we Wrocławiu z kilku portali
+Strona, która co godzinę sama zbiera oferty mieszkań we Wrocławiu z kilku portali
 (Otodom, OLX, Gratka, Nieruchomosci-online, Domiporta) i pokazuje je w jednym miejscu.
 U góry strony przełączasz się między trzema rodzajami ofert:
 
@@ -24,14 +24,10 @@ Każdy rodzaj ofert pamięta swoje własne filtry.
 
 ## Jak włączyć stronę (jednorazowo)
 
-Repozytorium jest prywatne, a strona stoi na [Vercel](https://vercel.com) (darmowy plan):
+Strona stoi na GitHub Pages (za darmo) i publikuje się sama po każdej aktualizacji ofert:
+**https://mjuchiewicz.github.io/flat-scrapper/**
 
-1. Zaloguj się na vercel.com przez GitHuba → **Add New… → Project**.
-2. Przy **flat-scrapper** kliknij **Import** (jeśli go nie widać: „Adjust GitHub App Permissions” i dodaj to repo).
-3. **Root Directory** → **Edit** → wybierz `docs`. Framework Preset: **Other**. → **Deploy**.
-4. Adres strony znajdziesz w Vercel na górze projektu (np. `flat-scrapper-xyz.vercel.app`).
-
-Vercel sam publikuje nową wersję strony po każdej aktualizacji ofert.
+Gdyby trzeba było włączyć ją od nowa: **Settings → Pages → Deploy from a branch → `main` / `/docs` → Save**.
 
 ## Ręczne pobranie ofert
 
@@ -40,7 +36,7 @@ Jedno uruchomienie pobiera wszystko: kupno, wynajem i pokoje. Pola w okienku mo�
 żeby pobrać np. tylko wynajem, wpisz w polu typów `wynajem`.
 Po kilkudziesięciu minutach nowe dane pojawią się na stronie (czasem trzeba odświeżyć).
 
-Automatycznie dzieje się to co 4 godziny (tak, żeby zmieścić się w darmowym limicie minut GitHuba dla prywatnych repozytoriów).
+Automatycznie dzieje się to co godzinę.
 Jeśli któryś portal nie zadziała, przy dacie aktualizacji na stronie pojawi się pomarańczowa kropka
 i napis „portal nie działa” (po kliknięciu widać szczegóły), a jego wcześniejsze oferty zostaną na liście.
 
