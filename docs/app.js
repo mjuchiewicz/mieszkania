@@ -1,4 +1,4 @@
-/* Mieszkania Wrocław — statyczny frontend (bez budowania, bez backendu). */
+/* Mieszkania (Wrocław i inne miejscowości z config.yaml) — statyczny frontend (bez budowania, bez backendu). */
 (function () {
   "use strict";
 
@@ -155,6 +155,10 @@
   // ------------------------------------------------------------------ stan
   var META = {};
   var metaReady = null;
+  // Miejscowości z data/cities.json. CITIES = null → stary układ danych (data/<typ>.json, tylko Wrocław).
+  var CITIES = null;
+  var CITY = null;         // slug wybranej miejscowości, np. "wroclaw"
+  var DEFAULT_CITY = "wroclaw";
   var STORE = {};          // deal -> { status, ALL, BY_KEY, GROUPS, districts }
   var DEAL = "sprzedaz";
   var D = null;            // STORE[DEAL]
@@ -198,6 +202,7 @@
   }
   function toParams(f) {
     var p = new URLSearchParams();
+    if (multiCity()) p.set("city", CITY);
     p.set("deal", DEAL);
     Object.keys(DEFAULTS).forEach(function (k) {
       var v = f[k], d = DEFAULTS[k];
@@ -217,9 +222,11 @@
     }
     return keepAllowed(f);
   }
+  // filtry (m.in. dzielnice) pamiętamy osobno dla każdej miejscowości; Wrocław pod starym kluczem
+  function filtersKey(deal) { return CITY && CITY !== DEFAULT_CITY ? "filters_" + CITY + "_" + deal : "filters_" + deal; }
   function savedFilters(deal) {
-    var s = lsGet("filters_" + deal, null);
-    if (!s && deal === "sprzedaz") s = lsGet("filters", null); // poprzednia wersja strony
+    var s = lsGet(filtersKey(deal), null);
+    if (!s && deal === "sprzedaz" && (!CITY || CITY === DEFAULT_CITY)) s = lsGet("filters", null); // poprzednia wersja strony
     return sanitize(s);
   }
   // Odczyt stanu z adresu (#deal=wynajem&pmax=3000…) albo z pamięci przeglądarki.
@@ -230,12 +237,32 @@
     var deal = p && p.get("deal");
     if (!DEALS[deal]) deal = p && Array.from(p.keys()).length ? "sprzedaz" : lsGet("deal", "sprzedaz");
     if (!DEALS[deal]) deal = "sprzedaz";
-    var onlyDeal = p && Array.from(p.keys()).every(function (k) { return k === "deal"; });
+    var onlyDeal = p && Array.from(p.keys()).every(function (k) { return k === "deal" || k === "city"; });
     return { deal: deal, F: p && !onlyDeal ? fromParams(p) : savedFilters(deal) };
   }
+  // Miejscowość z adresu (#city=krakow), z pamięci przeglądarki albo pierwsza z listy.
+  function readCity() {
+    if (!CITIES) return null;
+    var p = null;
+    try { p = new URLSearchParams((location.hash || "").replace(/^#/, "")); } catch (e) { p = null; }
+    var want = [p && p.get("city"), lsGet("city", null), CITIES.default];
+    for (var i = 0; i < want.length; i++) if (cityInfo(want[i])) return want[i];
+    return CITIES.cities[0].slug;
+  }
+  function cityInfo(slug) {
+    if (!CITIES || !slug) return null;
+    for (var i = 0; i < CITIES.cities.length; i++) if (CITIES.cities[i].slug === slug) return CITIES.cities[i];
+    return null;
+  }
+  function multiCity() { return !!(CITIES && CITIES.cities.length > 1); }
+  function cityCenter() {
+    var c = cityInfo(CITY);
+    return c && c.lat && c.lon ? [c.lat, c.lon] : [51.11, 17.03];
+  }
   function persistFilters() {
-    lsSet("filters_" + DEAL, F);
+    lsSet(filtersKey(DEAL), F);
     lsSet("deal", DEAL);
+    if (CITY) lsSet("city", CITY);
     if (isRent(DEAL)) lsSet("rentSub", DEAL); // Wynajem pamięta ostatni wybór: mieszkanie czy pokój
     var url = location.pathname + location.search + "#" + toParams(F).toString();
     try { history.replaceState(null, "", url); } catch (e) { /* np. file:// */ }
@@ -307,9 +334,9 @@
     store.sources = Object.keys(srcs).sort(function (a, b) { return srcName(a).localeCompare(srcName(b), "pl"); });
   }
 
-  // Jedyne miejsce, które buduje adresy plików z danymi (meta.json, <typ>.json).
-  // Gdy dojdą miasta, wystarczy tu dodać prefiks, np. "data/" + city + "/" + name.
-  function dataUrl(name) { return "data/" + name; }
+  // Jedyne miejsce, które buduje adresy plików z danymi (meta.json, <typ>.json):
+  // data/<miejscowość>/<plik>, a przy starym układzie (brak data/cities.json) — data/<plik>.
+  function dataUrl(name) { return CITIES && CITY ? "data/" + CITY + "/" + name : "data/" + name; }
 
   function fetchJson(url) {
     return fetch(url + "?t=" + Math.floor(Date.now() / 60000), { cache: "no-cache" })
@@ -1113,10 +1140,15 @@
     window.addEventListener("hashchange", function () {
       var cur = toParams(F).toString();
       if (location.hash.replace(/^#/, "") === cur) return;
+      var hc = null;
+      try { hc = new URLSearchParams(location.hash.replace(/^#/, "")).get("city"); } catch (e) { hc = null; }
+      var cityChanged = hc && hc !== CITY && cityInfo(hc) && setCity(hc);
+      if (cityChanged) loadMeta();
       var st = readLocation();
       if (st.deal !== DEAL) { DEAL = st.deal; }
       F = st.F;
       showDeal();
+      if (cityChanged) metaReady.then(function () { applyEnabledDeals(); renderStatus(); });
     });
 
     var bar = $("filterbar");
@@ -1282,7 +1314,7 @@
       var L = window.L;
       var dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
       if (!mapState.map) {
-        mapState.map = L.map("map", { preferCanvas: true, zoomControl: true }).setView([51.11, 17.03], 12);
+        mapState.map = L.map("map", { preferCanvas: true, zoomControl: true }).setView(cityCenter(), 12);
         mapState.map.getContainer().addEventListener("click", function (e) {
           var a = e.target.closest && e.target.closest("[data-open]");
           if (a) markSeen(a.getAttribute("data-open"));
@@ -1331,6 +1363,7 @@
       setTimeout(function () {
         mapState.map.invalidateSize();
         if (markers.length) mapState.map.fitBounds([[minLat, minLon], [maxLat, maxLon]], { padding: [30, 30], maxZoom: 15 });
+        else mapState.map.setView(cityCenter(), 12);
       }, 50);
       var withPos = markers.length, missing = filtered.length - withPos;
       var parts = [];
@@ -1367,8 +1400,10 @@
           : '<span class="err">nie działa</span>' + (s.last_ok ? ' <span class="small">· ostatnio ' + esc(ago(parseTs(s.last_ok))) + "</span>" : "")) +
         "</span></li>";
     }).join("");
+    var unsup = Object.keys(META.unsupported || {}).map(srcName).sort();
     $("statusPanel").innerHTML = "<h3>" + (last ? "Ostatnia aktualizacja: " + esc(fmtDate(last)) : "Jeszcze nie było aktualizacji") + "</h3>" +
       (rows ? "<ul>" + rows + "</ul>" : "") +
+      (unsup.length ? '<div class="small">Nie obsługują tej miejscowości: ' + esc(unsup.join(", ")) + ".</div>" : "") +
       (bad.length ? '<div class="small">Oferty pobrane wcześniej z niedziałających portali nadal są widoczne.</div>'
         : '<div class="small">Oferty odświeżają się automatycznie kilka razy dziennie.</div>');
   }
@@ -1398,18 +1433,92 @@
     }
   }
 
-  // ------------------------------------------------------------------ start
-  function init() {
-    var st = readLocation();
-    DEAL = st.deal;
-    F = st.F;
-    bindFilters();
-    bindCards();
+  // ------------------------------------------------------------------ API dla docs/alerts.js (powiadomienia)
+  // Tylko odczyt stanu; alerts.js ustawia filtry przez zmianę adresu (#…), którą obsługuje hashchange.
+  window.MW = {
+    getDeal: function () { return DEAL; },
+    getFilters: function () { return JSON.parse(JSON.stringify(F)); },
+    getCity: function () { return typeof CITY === "string" && CITY ? CITY : "wroclaw"; },
+    getMap: function () { return mapState.map; },
+    dealLabel: function (d) { return (DEALS[d] || DEALS[DEAL]).label; }
+  };
+
+  // ------------------------------------------------------------------ miejscowości
+  function loadMeta() {
     metaReady = fetchJson(dataUrl("meta.json"))
       .then(function (r) { META = r.data && typeof r.data === "object" && !Array.isArray(r.data) ? r.data : {}; })
       .catch(function () { META = {}; });
+    return metaReady;
+  }
+  // Ustawia miejscowość (bez wczytywania danych): nagłówek, tytuł, wybór miasta, pamięć.
+  function setCity(slug) {
+    if (!CITIES || !cityInfo(slug)) return false;
+    var changed = CITY !== slug;
+    CITY = slug;
+    STORE = {};
+    META = {};
+    renderCityHeader();
+    if (changed) lsSet("city", slug);
+    return changed;
+  }
+  function renderCityHeader() {
+    var info = cityInfo(CITY);
+    var name = info ? info.name : "Wrocław";
+    $("brandCity").textContent = name;
+    $("brand").setAttribute("aria-label", "Mieszkania " + name + " — strona główna");
+    document.title = "Mieszkania " + name;
+    var sel = $("citySelect");
+    var multi = multiCity();
+    sel.hidden = !multi;
+    sel.parentNode.classList.toggle("multi", multi);
+    if (multi) {
+      sel.innerHTML = CITIES.cities.map(function (c) {
+        return '<option value="' + esc(c.slug) + '"' + (c.slug === CITY ? " selected" : "") + ">" + esc(c.name) + "</option>";
+      }).join("");
+    }
+  }
+  function switchCity(slug) {
+    if (!setCity(slug)) return;
+    var view = F.view;
+    F = savedFilters(DEAL);
+    F.view = view;
+    F.tab = "all";
+    closePanel();
+    $$(".dist-search").forEach(function (i) { i.value = ""; });
+    loadMeta();
     showDeal();
     metaReady.then(function () { applyEnabledDeals(); renderStatus(); });
+  }
+  // data/cities.json; brak pliku = stary układ danych (sam Wrocław, data/<typ>.json)
+  function loadCities() {
+    return fetchJson("data/cities.json")
+      .then(function (r) {
+        var d = r.data;
+        if (d && Array.isArray(d.cities) && d.cities.length) {
+          d.cities = d.cities.filter(function (c) { return c && typeof c.slug === "string" && /^[a-z0-9_-]+$/.test(c.slug); })
+            .map(function (c) {
+              return { slug: c.slug, name: String(c.name || c.slug), lat: +c.lat || null, lon: +c.lon || null };
+            });
+          if (d.cities.length) CITIES = d;
+        }
+      })
+      .catch(function () { CITIES = null; });
+  }
+
+  // ------------------------------------------------------------------ start
+  function init() {
+    loadCities().then(function () {
+      if (CITIES) setCity(readCity());
+      var st = readLocation();
+      DEAL = st.deal;
+      F = st.F;
+      bindFilters();
+      bindCards();
+      $("citySelect").addEventListener("change", function (e) { switchCity(e.target.value); });
+      loadMeta();
+      showDeal();
+      metaReady.then(function () { applyEnabledDeals(); renderStatus(); });
+    });
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

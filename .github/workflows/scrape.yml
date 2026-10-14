@@ -17,6 +17,10 @@ on:
         description: "Tylko wybrane typy: sprzedaz, wynajem, pokoj — po przecinku (puste = wszystkie włączone)"
         required: false
         default: ""
+      cities:
+        description: "Tylko wybrane miejscowości z config.yaml, po przecinku, np. wroclaw (puste = wszystkie)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -28,7 +32,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 60   # jeden przebieg pobiera kupno, wynajem i pokoje
+    timeout-minutes: 60   # jeden przebieg pobiera kupno, wynajem i pokoje (każdej miejscowości z config.yaml)
     steps:
       - uses: actions/checkout@v4
 
@@ -45,18 +49,33 @@ jobs:
           MAX_PAGES: ${{ github.event.inputs.max_pages }}
           SOURCES: ${{ github.event.inputs.sources }}
           DEALS: ${{ github.event.inputs.deals }}
+          CITIES: ${{ github.event.inputs.cities }}
         run: |
           ARGS=""
           if [ -n "$MAX_PAGES" ]; then ARGS="$ARGS --max-pages $MAX_PAGES"; fi
           if [ -n "$SOURCES" ]; then ARGS="$ARGS --sources $SOURCES"; fi
           if [ -n "$DEALS" ]; then ARGS="$ARGS --deals $DEALS"; fi
+          if [ -n "$CITIES" ]; then ARGS="$ARGS --cities $CITIES"; fi
           python -m scraper.main $ARGS
+
+      # Maile o nowych ofertach. Alerty to sekrety ALERT_… (kod ze strony → „Powiadomienia”),
+      # dane Gmaila w sekretach GMAIL_USER i GMAIL_APP_PASSWORD. Skrypt nie wypisuje adresów
+      # ani filtrów (logi są publiczne), a błąd wysyłki nie zatrzymuje zapisu danych.
+      - name: Powiadomienia e-mail
+        continue-on-error: true
+        timeout-minutes: 10
+        env:
+          ALL_SECRETS: ${{ toJSON(secrets) }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python -m scraper.alerts
 
       - name: Zapis zmian w repozytorium
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/data/
+          # cities_cache.json i scraper/geo/ zmieniają się tylko, gdy w config.yaml dojdzie nowa miejscowość
+          git add docs/data/ scraper/cities_cache.json scraper/geo/
           if git diff --cached --quiet; then
             echo "Brak zmian w danych."
             exit 0

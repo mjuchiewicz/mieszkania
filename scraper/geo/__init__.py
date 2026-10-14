@@ -1,14 +1,15 @@
-"""Przybliżone geokodowanie ofert offline, na podstawie statycznego gazetteera Wrocławia.
+"""Przybliżone geokodowanie ofert offline, na podstawie statycznego gazetteera miejscowości.
 
 Większość portali w wynikach wyszukiwania nie podaje współrzędnych — tylko ulicę
 i osiedle / dzielnicę. Ten moduł dopasowuje te napisy do słownika
-scraper/geo/wroclaw.json (zbudowanego raz skryptem build_gazetteer.py z danych
-OpenStreetMap) i uzupełnia lat/lon wraz z polem `geo` = dokładność:
+scraper/geo/<miejscowość>.json, np. wroclaw.json (zbudowanego raz skryptem
+build_gazetteer.py z danych OpenStreetMap; dla nowych miejscowości robi to
+`python -m scraper.cities add`) i uzupełnia lat/lon wraz z polem `geo` = dokładność:
 
     "dokładna"  – współrzędne z portalu,
     "ulica"     – punkt na ulicy (przy znanym osiedlu: fragment ulicy najbliżej osiedla),
     "osiedle"   – środek osiedla + stały, mały rozrzut (żeby pinezki się nie nakładały),
-    "dzielnica" – środek jednej z 5 dawnych dzielnic (Krzyki, Fabryczna…) + większy rozrzut.
+    "dzielnica" – (Wrocław) środek jednej z 5 dawnych dzielnic (Krzyki, Fabryczna…) + większy rozrzut.
 
 Nic nie jest pobierane z sieci w czasie działania scrapera.
 """
@@ -23,7 +24,13 @@ import unicodedata
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-GAZETTEER_PATH = Path(__file__).resolve().parent / "wroclaw.json"
+GEO_DIR = Path(__file__).resolve().parent
+GAZETTEER_PATH = GEO_DIR / "wroclaw.json"
+DEFAULT_CITY = "wroclaw"
+
+
+def gazetteer_path(city: str = DEFAULT_CITY) -> Path:
+    return GEO_DIR / ("%s.json" % city)
 
 GEO_EXACT = "dokładna"
 GEO_STREET = "ulica"
@@ -35,7 +42,7 @@ APPROX = (GEO_STREET, GEO_AREA, GEO_DISTRICT)
 DEFAULT_BBOX = (51.0426, 16.8073, 51.2100, 17.1762)
 BBOX_MARGIN = 0.01  # ~1 km zapasu
 
-# Dawne dzielnice (do 1990 r.) — portale wciąż ich używają zamiast osiedli.
+# Wrocław: dawne dzielnice (do 1990 r.) — portale wciąż ich używają zamiast osiedli.
 # Punkty to przybliżone środki zabudowy mieszkaniowej każdej dzielnicy.
 BIG_DISTRICTS = {
     "stare miasto": ("Stare Miasto", 51.1075, 17.0250),
@@ -68,7 +75,7 @@ w we ok rejon rejonie przy blisko obok centrum dolnoslaskie
 
 AREA_STOPWORDS = set("wroclaw wroclawiu dolnoslaskie dolnoslaski osiedle os dzielnica gmina powiat".split())
 
-# Literówki / warianty spotykane na portalach → nazwa w gazetteerze (po normalizacji)
+# Wrocław: literówki / warianty spotykane na portalach → nazwa w gazetteerze (po normalizacji)
 AREA_ALIASES = {
     "krzyk": "krzyki",
     "krzki": "krzyki",
@@ -76,6 +83,9 @@ AREA_ALIASES = {
     "rynek": "stare miasto",
     "zawidawie": "psie pole zawidawie",
 }
+# Dane ręczne tylko dla miast, dla których je przygotowano
+CITY_BIG_DISTRICTS = {"wroclaw": BIG_DISTRICTS}
+CITY_AREA_ALIASES = {"wroclaw": AREA_ALIASES}
 
 _HOUSE_NO_RE = re.compile(r"(?<=[^\W\d_])\s+(nr\.?\s*)?\d+\s*[a-zA-Z]?(\s*[/-]\s*\d+\s*[a-zA-Z]?)?\b.*$", re.U)
 
@@ -125,9 +135,17 @@ def street_parts(s: Optional[str]) -> List[str]:
     return [p.strip() for p in parts if p and p.strip()]
 
 
-def area_key(s: Optional[str]) -> str:
-    toks = [t for t in norm_text(s).split() if t not in AREA_STOPWORDS]
+def area_key(s: Optional[str], extra_stop: Iterable[str] = ()) -> str:
+    """extra_stop: dodatkowe słowa pomijane (nazwa miejscowości innej niż Wrocław,
+    np. {"krakow"}, żeby "Kraków Podgórze" -> "podgorze")."""
+    stop = AREA_STOPWORDS.union(extra_stop) if extra_stop else AREA_STOPWORDS
+    toks = [t for t in norm_text(s).split() if t not in stop]
     return " ".join(toks)
+
+
+def city_stopwords(name: Optional[str]) -> frozenset:
+    """Słowa nazwy miejscowości pomijane w nazwach osiedli ("Kraków Podgórze" -> "podgorze")."""
+    return frozenset(t for t in norm_text(name).split() if len(t) > 2)
 
 
 def haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -150,7 +168,11 @@ def jitter(key: str, lat: float, lon: float, rmin: float, rmax: float) -> Tuple[
 
 
 class Gazetteer:
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, city: str = DEFAULT_CITY):
+        self.city = data.get("city") or city
+        self.big_districts = CITY_BIG_DISTRICTS.get(self.city, {})
+        self.aliases = CITY_AREA_ALIASES.get(self.city, {})
+        self.stop = city_stopwords(data.get("name")) if self.city != DEFAULT_CITY else frozenset()
         self.bbox = tuple(data.get("bbox") or DEFAULT_BBOX)
         self.streets: Dict[str, List[Tuple[float, float]]] = {
             k: [tuple(p) for p in v["pts"]] for k, v in (data.get("streets") or {}).items()
@@ -182,9 +204,9 @@ class Gazetteer:
                         self.area_parts.setdefault(sub, k)
 
     @classmethod
-    def load(cls, path: Path = GAZETTEER_PATH) -> "Gazetteer":
+    def load(cls, path: Path = GAZETTEER_PATH, city: str = DEFAULT_CITY) -> "Gazetteer":
         with open(path, encoding="utf-8") as f:
-            return cls(json.load(f))
+            return cls(json.load(f), city)
 
     # ------------------------------------------------------------ lookups
 
@@ -195,13 +217,13 @@ class Gazetteer:
 
     def area(self, name: Optional[str]) -> Tuple[Optional[str], Optional[Tuple[float, float]]]:
         """Zwraca (dokładność, punkt) dla nazwy osiedla / dzielnicy.
-        ("poza", None) gdy to miejscowość pod Wrocławiem, (None, None) gdy nieznane."""
-        k = area_key(name)
+        ("poza", None) gdy to miejscowość pod miastem, (None, None) gdy nieznane."""
+        k = area_key(name, self.stop)
         if not k:
             return None, None
-        k = AREA_ALIASES.get(k, k)
-        if k in BIG_DISTRICTS:
-            _, lat, lon = BIG_DISTRICTS[k]
+        k = self.aliases.get(k, k)
+        if k in self.big_districts:
+            _, lat, lon = self.big_districts[k]
             return GEO_DISTRICT, (lat, lon)
         if k in self.areas:
             return GEO_AREA, self.areas[k]
@@ -210,14 +232,14 @@ class Gazetteer:
         # "Krzyki-Partynice" itp. gdy pełnej nazwy nie ma: pierwszy znany człon
         toks = k.split()
         for t in toks:
-            t = AREA_ALIASES.get(t, t)
+            t = self.aliases.get(t, t)
             if t in self.areas:
                 return GEO_AREA, self.areas[t]
         if k in self.outside:
             return "poza", None
         for t in toks:
-            if t in BIG_DISTRICTS:
-                _, lat, lon = BIG_DISTRICTS[t]
+            if t in self.big_districts:
+                _, lat, lon = self.big_districts[t]
                 return GEO_DISTRICT, (lat, lon)
         return None, None
 
@@ -290,7 +312,7 @@ class Gazetteer:
         """(dokładność, (lat, lon)) dla oferty bez współrzędnych z portalu."""
         prec, center = self.area(rec.get("district"))
         if prec == "poza":
-            return None, None  # oferta spod Wrocławia — nazwy ulic by nas zmyliły
+            return None, None  # oferta spod miasta — nazwy ulic by nas zmyliły
         if rec.get("street"):
             p = self.street_point(rec.get("street"), center,
                                   MAX_STREET_DIST_KM.get(prec or GEO_AREA, 2.5))
@@ -302,14 +324,15 @@ class Gazetteer:
         return None, None
 
 
-_GAZ: Optional[Gazetteer] = None
+_GAZ: Dict[str, Optional[Gazetteer]] = {}
 
 
-def get_gazetteer() -> Optional[Gazetteer]:
-    global _GAZ
-    if _GAZ is None and GAZETTEER_PATH.exists():
-        _GAZ = Gazetteer.load()
-    return _GAZ
+def get_gazetteer(city: str = DEFAULT_CITY) -> Optional[Gazetteer]:
+    """Gazetteer miejscowości (None, gdy nie ma pliku scraper/geo/<miejscowość>.json)."""
+    if _GAZ.get(city) is None:
+        path = gazetteer_path(city)
+        _GAZ[city] = Gazetteer.load(path, city) if path.exists() else None
+    return _GAZ[city]
 
 
 def _num(v) -> Optional[float]:
@@ -320,10 +343,14 @@ def _num(v) -> Optional[float]:
     return f if math.isfinite(f) else None
 
 
-def geocode_listings(listings: Iterable[dict], gaz: Optional[Gazetteer] = None) -> Dict[str, int]:
+def geocode_listings(listings: Iterable[dict], gaz: Optional[Gazetteer] = None,
+                     city: str = DEFAULT_CITY,
+                     bbox: Optional[Tuple[float, float, float, float]] = None) -> Dict[str, int]:
     """Uzupełnia lat/lon/geo w miejscu. Prawdziwych współrzędnych z portalu nie nadpisuje.
-    Zwraca statystykę {dokładność: liczba ofert} (klucz "brak" = bez lokalizacji)."""
-    gaz = gaz or get_gazetteer()
+    Zwraca statystykę {dokładność: liczba ofert} (klucz "brak" = bez lokalizacji).
+    bbox (S, W, N, E) — granice miasta, gdy nie ma gazetteera (domyślnie Wrocław)."""
+    gaz = gaz or get_gazetteer(city)
+    box = bbox or DEFAULT_BBOX
     stats: Dict[str, int] = {}
     for rec in listings:
         lat, lon, g = _num(rec.get("lat")), _num(rec.get("lon")), rec.get("geo")
@@ -331,13 +358,13 @@ def geocode_listings(listings: Iterable[dict], gaz: Optional[Gazetteer] = None) 
             lat = lon = None  # nasze własne przybliżenie z poprzedniego przebiegu — liczymy od nowa
         if lat is not None and lon is not None:
             in_box = gaz.in_bbox(lat, lon) if gaz else (
-                DEFAULT_BBOX[0] - BBOX_MARGIN <= lat <= DEFAULT_BBOX[2] + BBOX_MARGIN
-                and DEFAULT_BBOX[1] - BBOX_MARGIN <= lon <= DEFAULT_BBOX[3] + BBOX_MARGIN)
+                box[0] - BBOX_MARGIN <= lat <= box[2] + BBOX_MARGIN
+                and box[1] - BBOX_MARGIN <= lon <= box[3] + BBOX_MARGIN)
             if in_box:
                 rec["lat"], rec["lon"], rec["geo"] = lat, lon, GEO_EXACT
                 stats[GEO_EXACT] = stats.get(GEO_EXACT, 0) + 1
                 continue
-            lat = lon = None  # poza Wrocławiem / błędne
+            lat = lon = None  # poza miastem / błędne
         rec["lat"] = rec["lon"] = None
         rec.pop("geo", None)
         prec, pt = gaz.locate(rec) if gaz else (None, None)

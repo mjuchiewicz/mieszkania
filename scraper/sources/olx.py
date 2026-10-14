@@ -1,4 +1,5 @@
-"""Scraper OLX — mieszkania na sprzedaż, na wynajem i pokoje we Wrocławiu.
+"""Scraper OLX — mieszkania na sprzedaż, na wynajem i pokoje (domyślnie we Wrocławiu;
+miejscowość z config["city"] = {city_id, region_id, slug}, patrz scraper/cities.py).
 
 Korzysta z publicznego JSON API frontendu OLX:
     https://www.olx.pl/api/v1/offers/
@@ -37,14 +38,15 @@ SOURCE = "olx"
 API_URL = "https://www.olx.pl/api/v1/offers/"
 DEALS = ("sprzedaz", "wynajem", "pokoj")
 CATEGORY_IDS = {"sprzedaz": 14, "wynajem": 15, "pokoj": 11}
-REFERERS = {
-    "sprzedaz": "https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/wroclaw/",
-    "wynajem": "https://www.olx.pl/nieruchomosci/mieszkania/wynajem/wroclaw/",
-    "pokoj": "https://www.olx.pl/nieruchomosci/stancje-pokoje/wroclaw/",
+_REFERER_PATHS = {
+    "sprzedaz": "https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/%s/",
+    "wynajem": "https://www.olx.pl/nieruchomosci/mieszkania/wynajem/%s/",
+    "pokoj": "https://www.olx.pl/nieruchomosci/stancje-pokoje/%s/",
 }
+REFERERS = {d: p % "wroclaw" for d, p in _REFERER_PATHS.items()}  # Wrocław
 CATEGORY_ID = CATEGORY_IDS["sprzedaz"]  # zgodność wsteczna
-REGION_ID = 3         # dolnośląskie
-CITY_ID = 19701       # Wrocław
+REGION_ID = 3         # dolnośląskie (domyślnie)
+CITY_ID = 19701       # Wrocław (domyślnie)
 PAGE_SIZE = 40
 MAX_OFFSET = 1000     # limit walidacji API
 BAND_TARGET = 950     # pasmo cenowe z większą liczbą ofert dzielimy na pół
@@ -68,14 +70,23 @@ BUILDING_TYPE_MAP = {
 FURNITURE_MAP = {"yes": True, "no": False}
 
 
+def _location(config: dict) -> Tuple[int, int, str]:
+    """(city_id, region_id, slug do adresu) z config["city"]; bez niego — Wrocław."""
+    city = config.get("city")
+    if isinstance(city, dict) and city.get("city_id"):
+        return int(city["city_id"]), int(city["region_id"]), str(city.get("slug") or "")
+    return CITY_ID, REGION_ID, "wroclaw"
+
+
 def _build_params(config: dict, offset: int, price_from: Optional[int] = None,
                   price_to: Optional[int] = None, deal: str = "sprzedaz") -> Dict[str, Any]:
+    city_id, region_id, _slug = _location(config)
     params: Dict[str, Any] = {
         "offset": offset,
         "limit": PAGE_SIZE,
         "category_id": CATEGORY_IDS[deal],
-        "region_id": REGION_ID,
-        "city_id": CITY_ID,
+        "region_id": region_id,
+        "city_id": city_id,
         "sort_by": "created_at:desc",
     }
     pre = config.get("prefilter") or {}
@@ -311,10 +322,11 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
     dzielone na pół)."""
     if deal not in DEALS:
         raise ValueError("olx: nieobsługiwany typ ogłoszenia %r (obsługiwane: %s)" % (deal, DEALS))
+    city_id, _region_id, slug = _location(config)
     session = make_session()
     session.headers.update({
         "Accept": "application/json, text/plain, */*",
-        "Referer": REFERERS[deal],
+        "Referer": _REFERER_PATHS[deal] % slug,
     })
     min_band = MIN_BAND_WIDTH[deal]
     max_pages = int(config.get("max_pages") or 1)   # limit stron na pasmo
@@ -341,7 +353,7 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
                     stats["otodom"] += 1
                     continue
                 city = ((item.get("location") or {}).get("city") or {}).get("id")
-                if city is not None and city != CITY_ID:
+                if city is not None and city != city_id:
                     continue
                 listing = _parse_item(item, deal)
                 if listing.id in seen:
@@ -418,9 +430,11 @@ if __name__ == "__main__":
     cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    # użycie: python -m scraper.sources.olx [sprzedaz|wynajem|pokoj] [--full]
+    # użycie: python -m scraper.sources.olx [sprzedaz|wynajem|pokoj] [miejscowość] [--full]
+    from scraper.cities import location_for
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     deal = args[0] if args else "sprzedaz"
+    cfg["city"] = location_for(args[1] if len(args) > 1 else "wroclaw", SOURCE)
     if "prefilter" not in cfg or "deals" in cfg:
         cfg["prefilter"] = (((cfg.get("deals") or {}).get(deal) or {}).get("prefilter")
                             or cfg.get("prefilter") or {})

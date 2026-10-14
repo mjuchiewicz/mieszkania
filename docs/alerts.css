@@ -1,0 +1,124 @@
+/* Powiadomienia e-mail (docs/alerts.js) — ten sam język co reszta strony: tokeny z style.css. */
+.alert-toggle {
+  display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 10px;
+  border-radius: 10px; font-size: 14px; font-weight: 550; color: var(--text-2);
+  border: 1px solid var(--line); background: var(--surface);
+}
+.alert-toggle:hover { border-color: var(--line-strong); }
+.alert-toggle svg { width: 17px; height: 17px; }
+.alert-label { display: none; }
+@media (min-width: 1400px) { .alert-label { display: inline; } .alert-toggle { padding: 0 12px; } }
+
+.al-scrim { position: fixed; inset: 0; z-index: 80; background: var(--scrim); animation: fade .2s; }
+.al-panel {
+  position: fixed; z-index: 90; left: 0; right: 0; bottom: 0; max-height: 92vh;
+  display: flex; flex-direction: column;
+  background: var(--surface); border-radius: 20px 20px 0 0; box-shadow: var(--shadow-pop);
+  animation: sheet-in .22s ease-out;
+}
+@media (min-width: 900px) {
+  .al-panel {
+    left: auto; top: 0; right: 0; bottom: 0; width: 460px; max-height: none; border-radius: 0;
+    border-left: 1px solid var(--line); animation: drawer-in .2s ease-out;
+  }
+}
+.al-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 18px 6px; }
+.al-head h2 { margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
+.al-tabs {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 2px; margin: 6px 18px 4px; padding: 3px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 12px;
+}
+.al-tabs button { height: 34px; border-radius: 9px; font-size: 14px; font-weight: 550; color: var(--muted); }
+.al-tabs button:hover { color: var(--text); }
+.al-tabs button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 0 0 1px var(--line); }
+.al-body { overflow: auto; padding: 0 18px 8px; overscroll-behavior: contain; flex: 1 1 auto; }
+.al-foot {
+  display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  padding: 12px 18px calc(12px + env(safe-area-inset-bottom)); border-top: 1px solid var(--line);
+}
+.al-foot .btn-text svg { width: 16px; height: 16px; }
+
+.al-sec { padding: 16px 0; border-top: 1px solid var(--line); }
+.al-sec:first-child { border-top: 0; }
+.al-sec h4 { margin: 0 0 10px; font-size: 13px; font-weight: 600; color: var(--text); }
+.al-deal { font-size: 15px; font-weight: 600; margin-bottom: 8px; }
+.al-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.al-chip {
+  display: inline-flex; align-items: center; height: 28px; padding: 0 10px; border-radius: 999px;
+  background: var(--surface-2); border: 1px solid var(--line); font-size: 13px; color: var(--text-2);
+}
+.al-warn { margin: 4px 0 0; font-size: 13.5px; color: var(--warn); }
+.al-err { color: var(--warn) !important; }
+.al-sec .toggle { padding: 4px 0; }
+
+.al-map { height: 260px; margin-top: 12px; border-radius: var(--r); border: 1px solid var(--line); background: var(--img-bg); overflow: hidden; z-index: 0; position: relative; cursor: crosshair; }
+.al-map.small { height: 170px; cursor: default; margin: 10px 0 4px; }
+.al-map .leaflet-container { cursor: crosshair; }
+.al-map-msg { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; color: var(--muted); }
+.al-radius { display: flex; align-items: center; gap: 12px; margin-top: 12px; font-size: 14px; color: var(--text-2); }
+.al-radius input { flex: 1; accent-color: var(--accent); }
+.al-radius output { min-width: 52px; text-align: right; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); }
+
+.al-input {
+  width: 100%; min-height: 42px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); outline: none; font: inherit; font-size: 15px; color: inherit; resize: vertical;
+}
+.al-input::placeholder { color: var(--faint); }
+.al-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+textarea.al-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; word-break: break-all; }
+
+.al-emails {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-height: 44px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); cursor: text;
+}
+.al-emails:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.al-emails input { flex: 1 1 160px; min-width: 120px; height: 30px; border: 0; outline: 0; background: none; font-size: 15px; padding: 0 4px; }
+.al-emails input::placeholder { color: var(--faint); }
+.al-email {
+  display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px 0 10px; border-radius: 999px;
+  background: var(--accent-soft); color: var(--text); font-size: 13.5px; max-width: 100%;
+}
+.al-email button { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+.al-email button:hover { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--text); }
+.al-email svg { width: 13px; height: 13px; }
+
+.al-done { display: flex; gap: 12px; align-items: center; margin: 14px 0 6px; padding: 12px 14px; border-radius: var(--r); background: var(--accent-soft); font-size: 14px; }
+.al-done-ico { width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; flex: none; }
+.al-done-ico svg { width: 17px; height: 17px; stroke-width: 2.4; }
+.al-steps { list-style: none; counter-reset: st; margin: 8px 0 0; padding: 0; }
+.al-steps li { counter-increment: st; position: relative; padding: 14px 0 14px 38px; border-top: 1px solid var(--line); font-size: 14px; color: var(--text-2); }
+.al-steps li:first-child { border-top: 0; }
+.al-steps li::before {
+  content: counter(st); position: absolute; left: 0; top: 13px; width: 26px; height: 26px; border-radius: 50%;
+  border: 1px solid var(--line-strong); display: grid; place-items: center; font-size: 13px; font-weight: 650; color: var(--text);
+}
+.al-steps li > div { margin-bottom: 8px; }
+.al-steps .hint a, .al-info a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.al-gh { display: inline-flex; align-items: center; gap: 8px; }
+.al-gh svg { width: 16px; height: 16px; }
+.al-copy { display: flex; gap: 6px; align-items: stretch; }
+.al-copy input, .al-copy textarea {
+  flex: 1; min-width: 0; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-2);
+  font: 500 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); outline: none; resize: none;
+}
+.al-copy textarea { word-break: break-all; }
+.al-copy-btn {
+  flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px; min-height: 40px; border-radius: 10px;
+  border: 1px solid var(--line-strong); background: var(--surface); font-size: 13.5px; font-weight: 550; align-self: flex-start;
+}
+.al-copy:not(.multi) .al-copy-btn { align-self: stretch; }
+.al-copy-btn:hover { border-color: var(--text); }
+.al-copy-btn svg { width: 16px; height: 16px; }
+.al-copy-btn.ok { border-color: var(--accent); color: var(--accent); }
+.al-info { margin: 6px 0 10px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--r); font-size: 13.5px; color: var(--text-2); }
+.al-info h4 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--text); }
+.al-info p { margin: 6px 0 0; line-height: 1.5; }
+
+.al-loaded h4 { font-size: 15px; }
+.al-dl { display: grid; grid-template-columns: auto 1fr; gap: 6px 14px; margin: 12px 0 0; font-size: 13.5px; }
+.al-dl dt { color: var(--muted); }
+.al-dl dd { margin: 0; color: var(--text); word-break: break-all; }
+.al-recent { list-style: none; margin: 0; padding: 0; }
+.al-recent button { width: 100%; text-align: left; display: flex; justify-content: space-between; gap: 10px; padding: 9px 8px; border-radius: 8px; font-size: 13.5px; }
+.al-recent button:hover { background: var(--surface-2); }
+.al-recent span { color: var(--muted); white-space: nowrap; }

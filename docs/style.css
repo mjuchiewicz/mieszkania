@@ -93,6 +93,19 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .brand-name { font-weight: 650; font-size: 16px; letter-spacing: -.01em; white-space: nowrap; }
 .brand-city { color: var(--muted); font-weight: 500; }
 @media (max-width: 419px) { .brand-city { display: none; } }
+/* wybór miasta (gdy jest ich kilka) — wygląda jak nazwa miasta w logo, ze strzałką */
+.brand-wrap { grid-area: brand; display: inline-flex; align-items: center; gap: 2px; min-width: 0; }
+.brand-wrap.multi .brand-city { display: none; }
+.brand-wrap .brand { flex: none; }
+@media (max-width: 419px) { .brand-wrap.multi .brand-name { display: none; } }
+.city-select {
+  appearance: none; -webkit-appearance: none; min-width: 0; max-width: 46vw; text-overflow: ellipsis;
+  height: 32px; padding: 0 24px 0 6px; margin-left: 2px; border: 1px solid transparent; border-radius: var(--r-sm);
+  background: transparent url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m7 10 5 5 5-5' fill='none' stroke='%23a1a1aa' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") no-repeat right 4px center / 16px;
+  font-size: 16px; font-weight: 500; letter-spacing: -.01em; color: var(--muted); cursor: pointer;
+}
+.city-select:hover { background-color: var(--surface-2); color: var(--text); }
+.city-select option { color: var(--text); background: var(--surface); }
 
 .deal-switch {
   grid-area: deal;

@@ -16,7 +16,7 @@ from typing import List, Optional
 from urllib.parse import urlencode
 
 from scraper.models import Listing
-from scraper.sources.gratka import Api, _demo, scrape_portal
+from scraper.sources.gratka import Api, _demo, city_slug, scrape_portal
 
 SOURCE = "morizon"
 DEALS = ("sprzedaz", "wynajem", "pokoj")
@@ -29,7 +29,7 @@ _MARKET_TYPE = {"pierwotny": 1, "wtorny": 2}
 
 
 def _morizon_url(config: dict, deal: str, market: Optional[str], page: int) -> str:
-    city = config.get("city") or "wroclaw"
+    city = city_slug(config)  # np. "wroclaw", "wroclawski/miasto-siechnice"
     pf = config.get("prefilter") or {}
     params = []
     if deal == "sprzedaz":
@@ -60,4 +60,4 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
 
 
 if __name__ == "__main__":
-    _demo(scrape)
+    _demo(scrape, SOURCE)

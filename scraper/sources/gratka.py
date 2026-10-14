@@ -25,7 +25,8 @@ ogród — ``detailedInformation``; winda, piwnica, miejsce postojowe —
 dodatkowe opłaty / "dostępne od". Koszt: +1 zapytanie (~2-3 s) na stronę;
 ``config["gratka_details"] = False`` wyłącza je dla sprzedaży.
 
-Adresy (zweryfikowane):
+Adresy (zweryfikowane; "wroclaw" = config["city"]["slug"] z scraper/cities.py,
+np. "siechnice" albo "radwanice-49617"):
   sprzedaż: /nieruchomosci/mieszkania/wroclaw/{wtorny|pierwotny}
   wynajem:  /nieruchomosci/mieszkania/wroclaw/wynajem
   pokoje:   /nieruchomosci/pokoje/wroclaw   (tylko wynajem; ".../wynajem" daje 404)
@@ -207,14 +208,18 @@ def _parse_rooms(s: Any) -> Optional[int]:
     return int(m.group()) if m else None
 
 
-def _district(loc: List[str]) -> Optional[str]:
+def _district(loc: List[str], city_name: str = "Wrocław") -> Optional[str]:
     """['dolnośląskie','Wrocław','Krzyki','Jagodno'] -> 'Jagodno' (najdokładniejsza
-    jednostka po nazwie miasta), 'Os. Stare Miasto' -> 'Stare Miasto'."""
+    jednostka po nazwie miasta), 'Os. Stare Miasto' -> 'Stare Miasto'.
+    Przy mniejszych miejscowościach nazwa bywa dwa razy (gmina i miasto:
+    ['dolnośląskie','wrocławski','Siechnice','Siechnice']) — liczy się ostatnia."""
     if not loc:
         return None
-    try:
-        idx = [x.lower() for x in loc].index("wrocław")
-    except ValueError:
+    low = [x.lower() for x in loc]
+    city = (city_name or "Wrocław").lower()
+    if city in low:
+        idx = len(low) - 1 - low[::-1].index(city)
+    else:
         idx = 1 if len(loc) > 1 else 0
     rest = [x for x in loc[idx + 1:] if x]
     if not rest:
@@ -251,6 +256,7 @@ def parse_node(
     market: Optional[str],
     ld: Dict[str, dict],
     deal: str = "sprzedaz",
+    city_name: str = "Wrocław",
 ) -> Optional[Listing]:
     """Zamienia węzeł z searchResult.properties.nodes na Listing.
     Zwraca None dla ofert do pominięcia (brak ceny, zarezerwowane)."""
@@ -313,7 +319,7 @@ def parse_node(
         floor=floor,
         floor_num=floor_num,
         floors_total=floors_total,
-        district=_district(loc.get("location") or []),
+        district=_district(loc.get("location") or [], city_name),
         street=(loc.get("street") or None),
         market=market,
         seller=seller,
@@ -651,6 +657,22 @@ def _enrich_details(session: requests.Session, api: Api, base_url: str,
 UrlBuilder = Callable[[dict, str, Optional[str], int], str]
 
 
+def city_slug(config: dict) -> str:
+    """Fragment adresu miejscowości: config["city"]["slug"] (scraper/cities.py);
+    stary zapis config["city"] = "wroclaw" też działa; domyślnie Wrocław."""
+    city = config.get("city")
+    if isinstance(city, dict):
+        return str(city.get("slug") or "wroclaw")
+    return city or "wroclaw"
+
+
+def city_display_name(config: dict) -> str:
+    city = config.get("city")
+    if isinstance(city, dict) and city.get("name"):
+        return str(city["name"])
+    return "Wrocław"
+
+
 def _fetch_page(session: requests.Session, url: str) -> Tuple[Optional[dict], int]:
     """Tryb awaryjny (HTML): zwraca (dane strony listingu albo None gdy brak
     wyników, totalCount)."""
@@ -682,6 +704,7 @@ def scrape_portal(
     max_pages = int(config.get("max_pages") or 10)
     markets: List[Optional[str]] = ["wtorny", "pierwotny"] if deal == "sprzedaz" else [None]
     rental = deal != "sprzedaz"
+    city_name = city_display_name(config)
     session = make_session()
     results: List[Listing] = []
     seen = set()
@@ -740,7 +763,8 @@ def scrape_portal(
                     if not isinstance(node, dict):
                         continue
                     lst = parse_node(node, source=source, base_url=base_url,
-                                     thumb_host=thumb_host, market=market, ld=ld, deal=deal)
+                                     thumb_host=thumb_host, market=market, ld=ld, deal=deal,
+                                     city_name=city_name)
                 except Exception:  # noqa: BLE001
                     log.warning("%s: pominięto wadliwą ofertę %r", source,
                                 node.get("idOnFrontend") if isinstance(node, dict) else node,
@@ -801,7 +825,7 @@ GRATKA_API = Api("https://gratka.pl/api-gratka", "GRATKA", "GRATKA", GRATKA_BASE
 
 
 def _gratka_url(config: dict, deal: str, market: Optional[str], page: int) -> str:
-    city = config.get("city") or "wroclaw"
+    city = city_slug(config)
     pf = config.get("prefilter") or {}
     params = []
     if pf.get("price_min"):
@@ -829,11 +853,13 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
                          api=GRATKA_API, deal=deal)
 
 
-def _demo(scrape_fn: Callable[..., List[Listing]]) -> None:
-    """Użycie: python -m scraper.sources.gratka [sprzedaz|wynajem|pokoj] [max_pages]"""
+def _demo(scrape_fn: Callable[..., List[Listing]], source: str = SOURCE) -> None:
+    """Użycie: python -m scraper.sources.gratka [sprzedaz|wynajem|pokoj] [max_pages] [miejscowość]"""
     import os
     import sys
     import yaml
+
+    from scraper.cities import location_for
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     deal = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
@@ -843,6 +869,7 @@ def _demo(scrape_fn: Callable[..., List[Listing]]) -> None:
     deal_cfg = (cfg.get("deals") or {}).get(deal) or {}
     cfg["prefilter"] = deal_cfg.get("prefilter") or cfg.get("prefilter") or {}
     cfg["max_pages"] = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+    cfg["city"] = location_for(sys.argv[3] if len(sys.argv) > 3 else "wroclaw", source)
     t0 = time.time()
     items = scrape_fn(cfg, deal)
     print(f"deal: {deal}  count: {len(items)}  time: {time.time() - t0:.1f}s")

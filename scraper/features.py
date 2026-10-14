@@ -636,16 +636,17 @@ def enrich(d: dict) -> dict:
 # --------------------------------------------------------------------------- backfill
 
 def _backfill(deals: List[str]) -> None:
-    """Jednorazowo uzupełnia cechy w istniejących docs/data/<typ>.json (bez pobierania ofert).
+    """Jednorazowo uzupełnia cechy w istniejących docs/data/<miejscowość>/<typ>.json (bez pobierania ofert).
     Opisy są tam już przycięte — analizujemy to, co jest."""
     from collections import Counter
 
-    from scraper.main import _clean_features, deal_path, load_state, save_state
+    from scraper.main import DATA_DIR, _clean_features, deal_path, load_state, save_state
 
-    for deal in deals:
-        if not deal_path(deal).exists():
+    cities = sorted(p.name for p in DATA_DIR.iterdir() if p.is_dir())
+    for city, deal in [(c, d) for c in cities for d in deals]:
+        if not deal_path(deal, city).exists():
             continue
-        state = load_state(deal)
+        state = load_state(deal, city)
         listings = []
         stats: Counter = Counter()
         for rec in state.values():
@@ -657,9 +658,9 @@ def _backfill(deals: List[str]) -> None:
             if len(new.get("features") or []) > len(rec.get("features") or []):
                 stats["features"] += 1
             listings.append(new)
-        save_state(deal, listings)
-        print("%s: %d ofert, uzupełniono: %s" % (
-            deal, len(listings), ", ".join("%s=%d" % kv for kv in sorted(stats.items())) or "nic"))
+        save_state(deal, listings, city)
+        print("%s/%s: %d ofert, uzupełniono: %s" % (
+            city, deal, len(listings), ", ".join("%s=%d" % kv for kv in sorted(stats.items())) or "nic"))
 
 
 if __name__ == "__main__":

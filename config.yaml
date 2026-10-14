@@ -1,7 +1,18 @@
 # Ustawienia scrapera. Filtry ofert (cena, metraż, pokoje, dzielnice)
 # ustawiasz na stronie — tutaj tylko wstępne zawężenie tego, co w ogóle pobieramy.
 
-city: wroclaw
+# Miejscowości — każda dostaje własną listę ofert na stronie (wybór miasta
+# w nagłówku pojawia się, gdy jest ich więcej niż jedna). Wpisz nazwę albo slug:
+#   cities:
+#     - wroclaw
+#     - Kraków
+#     - siechnice
+#     - {name: "Radwanice", county: "wrocławski"}   # gdy nazwa jest niejednoznaczna
+# Nową miejscowość scraper sam ustali w portalach przy najbliższym przebiegu
+# (zapis w scraper/cities_cache.json) — można też od razu sprawdzić:
+#   python -m scraper.cities add "Kraków"
+cities:
+  - wroclaw
 
 # Typy ogłoszeń i wstępny filtr pobierania dla każdego z nich
 # (zostaw puste = bez limitu). Szerokie widełki = więcej ofert na stronie.

@@ -1,0 +1,15 @@
+{
+  "default": "wroclaw",
+  "cities": [
+    {
+      "slug": "wroclaw",
+      "name": "Wrocław",
+      "lat": 51.10195,
+      "lon": 17.03667
+    }
+  ],
+  "first_run": "2026-10-14T12:07:17Z",
+  "last_run": "2026-10-14T16:45:46Z",
+  "finished": "2026-10-14T16:45:53Z",
+  "runtime_s": 6.3
+}

@@ -1,5 +1,7 @@
 """Scraper nieruchomosci-online.pl — mieszkania na sprzedaż, mieszkania na wynajem
-i pokoje na wynajem we Wrocławiu.
+i pokoje na wynajem (domyślnie we Wrocławiu; miejscowość z config["city"] =
+{base, city_param, name}, patrz scraper/cities.py — np. city_param "Siechnice:28774",
+czyli nazwa i id miasta z podpowiedzi wyszukiwarki portalu).
 
 Wyniki są renderowane po stronie serwera. Dane bierzemy z kafelków HTML
 (`div.tile[data-id]`: cena, metraż, piętro, pokoje, rok budowy, dzielnica,
@@ -25,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from bs4 import BeautifulSoup
@@ -37,7 +39,8 @@ from scraper.sources.gratka import floor_numbers
 log = logging.getLogger(__name__)
 
 SOURCE = "nieruchomosci_online"
-BASE = "https://wroclaw.nieruchomosci-online.pl/szukaj.html"
+BASE = "https://wroclaw.nieruchomosci-online.pl/szukaj.html"   # Wrocław (domyślnie)
+CITY_PARAM = "Wrocław"
 DEALS = ("sprzedaz", "wynajem", "pokoj")
 # typ ogłoszenia -> (rodzaj nieruchomości, transakcja) w URL wyszukiwarki
 _DEAL_PATH = {
@@ -47,13 +50,22 @@ _DEAL_PATH = {
 }
 
 
+def _location(config: dict) -> Tuple[str, str, str]:
+    """(adres wyszukiwarki, parametr miasta, nazwa miasta) z config["city"]."""
+    city = config.get("city")
+    if isinstance(city, dict) and city.get("city_param"):
+        return str(city.get("base") or BASE), str(city["city_param"]), str(city.get("name") or "")
+    return BASE, CITY_PARAM, "Wrocław"
+
+
 def _search_url(config: dict, page: int, deal: str = "sprzedaz") -> str:
+    base, city_param, _name = _location(config)
     pre = config.get("prefilter") or {}
     pmin = int(pre["price_min"]) if pre.get("price_min") else None
     pmax = int(pre["price_max"]) if pre.get("price_max") else None
     amin = int(pre["area_min"]) if pre.get("area_min") else None
     kind, trans = _DEAL_PATH[deal]
-    parts = ["3", kind, trans, "", quote("Wrocław")]
+    parts = ["3", kind, trans, "", quote(city_param, safe=":")]
     if pmin or pmax or amin:
         price = ""
         if pmin or pmax:
@@ -61,7 +73,7 @@ def _search_url(config: dict, page: int, deal: str = "sprzedaz") -> str:
         parts += ["", "", "", price]
         if amin:
             parts.append(str(amin))
-    url = BASE + "?" + ",".join(parts)
+    url = base + "?" + ",".join(parts)
     if page > 1:
         url += f"&p={page}"
     return url
@@ -187,7 +199,8 @@ def _attrs(tile) -> Dict[str, str]:
     return out
 
 
-def _parse_tile(tile, streets: Dict[str, str], deal: str = "sprzedaz") -> Optional[Listing]:
+def _parse_tile(tile, streets: Dict[str, str], deal: str = "sprzedaz",
+                city_name: str = "Wrocław") -> Optional[Listing]:
     data_id = tile.get("data-id") or ""
     m = re.match(r"^(?:a|i\d+_)(\d+)$", data_id)
     if not m:
@@ -238,9 +251,9 @@ def _parse_tile(tile, streets: Dict[str, str], deal: str = "sprzedaz") -> Option
         a = prov.find("a")
         txt = a.get_text(" ", strip=True) if a else prov.get_text(" ", strip=True)
         txt = re.sub(r"\s+", " ", txt).strip().rstrip(",").strip()
-        txt = re.sub(r",?\s*Wrocław$", "", txt).strip()
+        txt = re.sub(r",?\s*%s$" % re.escape(city_name), "", txt).strip()
         # "Wrocław, dolnośląskie" = brak dzielnicy
-        if txt and not txt.lower().startswith("wrocław"):
+        if txt and not txt.lower().startswith(city_name.lower()):
             district = txt
 
     street = streets.get(lid)
@@ -301,6 +314,11 @@ def _parse_tile(tile, streets: Dict[str, str], deal: str = "sprzedaz") -> Option
     )
 
 
+def _no_results(soup: BeautifulSoup) -> bool:
+    """Strona "Nie znaleźliśmy nieruchomości, które spełniają wszystkie kryteria"."""
+    return any("nie znaleźliśmy" in sp.get_text(" ", strip=True).lower() for sp in soup.select("span.plug"))
+
+
 def _last_page(soup: BeautifulSoup) -> Optional[int]:
     nums = [int(n) for a in soup.find_all("a", href=True)
             if "szukaj.html" in a["href"]
@@ -312,6 +330,7 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
     if deal not in _DEAL_PATH:
         raise ValueError(f"nieruchomosci_online: nieobsługiwany typ ogłoszenia {deal!r}")
     max_pages = int(config.get("max_pages") or 30)
+    city_name = _location(config)[2] or "Wrocław"
     session = make_session()
     seen: set = set()
     results: List[Listing] = []
@@ -332,6 +351,10 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
         soup = BeautifulSoup(resp.text, "lxml")
         tiles = soup.select("div.tile[data-id]")
         if page == 1:
+            if not tiles and _no_results(soup):
+                # mała miejscowość: portal po prostu nie ma takich ofert
+                log.info("nieruchomosci_online %s: brak ofert (%s)", deal, resp.url)
+                return results
             if not tiles:
                 raise RuntimeError(
                     f"nieruchomosci_online: brak kafelków ofert na 1. stronie ({deal}) — zmiana struktury "
@@ -345,7 +368,7 @@ def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
         new = 0
         for t in tiles:
             try:
-                lst = _parse_tile(t, streets, deal)
+                lst = _parse_tile(t, streets, deal, city_name)
             except Exception as e:  # noqa: BLE001
                 log.warning("nieruchomosci_online: błąd parsowania kafelka %s: %s", t.get("data-id"), e)
                 continue
@@ -368,8 +391,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    from scraper.cities import location_for
+
+    # użycie: python -m scraper.sources.nieruchomosci_online [sprzedaz|wynajem|pokoj] [miejscowość] [max_pages]
     deal_arg = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
-    cfg["max_pages"] = 2
+    cfg["city"] = location_for(sys.argv[2] if len(sys.argv) > 2 else "wroclaw", SOURCE)
+    cfg["max_pages"] = int(sys.argv[3]) if len(sys.argv) > 3 else 2
     deal_cfg = (cfg.get("deals") or {}).get(deal_arg) or {}
     if "prefilter" in deal_cfg:
         cfg["prefilter"] = deal_cfg.get("prefilter") or {}

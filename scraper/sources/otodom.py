@@ -1,4 +1,5 @@
-"""Scraper Otodom — mieszkania na sprzedaż, na wynajem i pokoje we Wrocławiu.
+"""Scraper Otodom — mieszkania na sprzedaż, na wynajem i pokoje (domyślnie we Wrocławiu;
+miejscowość z config["city"]["location"], patrz scraper/cities.py).
 
 Strony wyników to Next.js; dane ofert siedzą w <script id="__NEXT_DATA__">
 pod props.pageProps.data.searchAds.items. Lista nie zawiera pola "rynek",
@@ -34,13 +35,25 @@ log = logging.getLogger(__name__)
 SOURCE = "otodom"
 BASE = "https://www.otodom.pl"
 DEALS = ("sprzedaz", "wynajem", "pokoj")
-_LOC = "/dolnoslaskie/wroclaw/wroclaw/wroclaw"
-SEARCH_URLS = {
-    "sprzedaz": BASE + "/pl/wyniki/sprzedaz/mieszkanie" + _LOC,
-    "wynajem": BASE + "/pl/wyniki/wynajem/mieszkanie" + _LOC,
-    "pokoj": BASE + "/pl/wyniki/wynajem/pokoj" + _LOC,
+# Lokalizacja: config["city"]["location"] (scraper/cities.py), np.
+# "dolnoslaskie/wroclawski/siechnice/siechnice"; bez niej — Wrocław.
+DEFAULT_LOCATION = "dolnoslaskie/wroclaw/wroclaw/wroclaw"
+_LOC = "/" + DEFAULT_LOCATION
+_DEAL_PATHS = {
+    "sprzedaz": "/pl/wyniki/sprzedaz/mieszkanie",
+    "wynajem": "/pl/wyniki/wynajem/mieszkanie",
+    "pokoj": "/pl/wyniki/wynajem/pokoj",
 }
+SEARCH_URLS = {d: BASE + p + _LOC for d, p in _DEAL_PATHS.items()}  # Wrocław
 SEARCH_URL = SEARCH_URLS["sprzedaz"]  # zgodność wsteczna
+
+
+def search_url(config: dict, deal: str) -> str:
+    city = config.get("city")
+    loc = city.get("location") if isinstance(city, dict) else None
+    return BASE + _DEAL_PATHS[deal] + "/" + str(loc or DEFAULT_LOCATION).strip("/")
+
+
 # (estate, transaction) oczekiwane w wynikach danego typu
 _DEAL_KIND = {
     "sprzedaz": ("FLAT", "SELL"),
@@ -396,7 +409,7 @@ def _iter_units(items: Iterable[dict], expand_investments: bool = True
 def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
     if deal not in DEALS:
         raise ValueError("otodom: nieobsługiwany typ ogłoszenia %r (obsługiwane: %s)" % (deal, DEALS))
-    url = SEARCH_URLS[deal]
+    url = search_url(config, deal)
     streams = _streams(deal)
     max_pages = int(config.get("max_pages") or 1)
     # Otodom blokuje częste zapytania (CAPTCHA AWS WAF), więc pobieramy tylko
@@ -520,12 +533,15 @@ if __name__ == "__main__":
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     with open(os.path.join(root, "config.yaml"), encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    # użycie: python -m scraper.sources.otodom [sprzedaz|wynajem|pokoj]
+    # użycie: python -m scraper.sources.otodom [sprzedaz|wynajem|pokoj] [miejscowość] [max_pages]
     deal = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
+    from scraper.cities import location_for
+    cfg["city"] = location_for(sys.argv[2] if len(sys.argv) > 2 else "wroclaw", SOURCE)
     if "deals" in cfg:
         cfg["prefilter"] = ((cfg["deals"].get(deal) or {}).get("prefilter")
                             or cfg.get("prefilter") or {})
-    cfg["max_pages"] = 2
+    cfg["max_pages"] = int(sys.argv[3]) if len(sys.argv) > 3 else 2
+    print("URL:", search_url(cfg, deal))
     out = scrape(cfg, deal)
     print("count:", len(out), deal)
     print(json.dumps([l.to_dict() for l in out[:3]], ensure_ascii=False, indent=2))

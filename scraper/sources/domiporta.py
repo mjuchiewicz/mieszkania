@@ -1,4 +1,6 @@
-"""Scraper domiporta.pl — mieszkania na sprzedaż i na wynajem we Wrocławiu.
+"""Scraper domiporta.pl — mieszkania na sprzedaż i na wynajem (domyślnie we Wrocławiu;
+miejscowość z config["city"] = {path, name}, np. path "dolnoslaskie/wroclawski/radwanice",
+patrz scraper/cities.py).
 
 Strona wyników jest renderowana po stronie serwera. Każda strona zawiera
 JSON-LD (ItemList z RealEstateListing: cena, metraż, pokoje, ulica, data,
@@ -27,13 +29,22 @@ log = logging.getLogger(__name__)
 
 SOURCE = "domiporta"
 BASE = "https://www.domiporta.pl"
-SEARCH_URL = BASE + "/mieszkanie/sprzedam/dolnoslaskie/wroclaw"
-RENT_URL = BASE + "/mieszkanie/wynajme/dolnoslaskie/wroclaw"
+DEFAULT_PATH = "dolnoslaskie/wroclaw"
+SEARCH_URL = BASE + "/mieszkanie/sprzedam/" + DEFAULT_PATH   # Wrocław
+RENT_URL = BASE + "/mieszkanie/wynajme/" + DEFAULT_PATH
 DEALS = ("sprzedaz", "wynajem")
 MARKETS = (("Wtorny", "wtorny"), ("Pierwotny", "pierwotny"))
 # Heurystyka: nazwa firmy wskazuje na dewelopera (a nie biuro nieruchomości).
 _DEV_RE = re.compile(r"develop|deweloper|budownictw|budowlan|inwestycj|invest|robyg|archicom|"
                      r"murapol|atal\b|vantage|ronson|lokum|\bsp\. ?z o\.? ?o|\bs\.a\.")
+
+
+def _location(config: dict) -> Tuple[str, str]:
+    """(ścieżka lokalizacji, nazwa miasta) z config["city"]; bez niego — Wrocław."""
+    city = config.get("city")
+    if isinstance(city, dict) and city.get("path"):
+        return str(city["path"]).strip("/"), str(city.get("name") or "")
+    return DEFAULT_PATH, "Wrocław"
 
 
 def _params(config: dict, rynek: Optional[str], page: int) -> Dict[str, str]:
@@ -90,8 +101,8 @@ def _ld_items(soup: BeautifulSoup) -> List[dict]:
     return items
 
 
-def _tile_locations(soup: BeautifulSoup) -> Dict[str, List[str]]:
-    """Mapuje ścieżkę URL ogłoszenia -> części lokalizacji po 'Wrocław'."""
+def _tile_locations(soup: BeautifulSoup, city_name: str = "Wrocław") -> Dict[str, List[str]]:
+    """Mapuje ścieżkę URL ogłoszenia -> części lokalizacji po nazwie miasta ('Wrocław')."""
     out: Dict[str, List[str]] = {}
     for art in soup.select("article.sneakpeak"):
         a = art.select_one("a.sneakpeak__title[href]")
@@ -101,7 +112,7 @@ def _tile_locations(soup: BeautifulSoup) -> Dict[str, List[str]]:
         text = loc.get_text(" ", strip=True)
         text = re.sub(r"^mieszkanie\s+", "", text, flags=re.I)
         parts = [p.strip() for p in text.split(",") if p.strip()]
-        if parts and parts[0].lower().startswith("wrocław"):
+        if parts and parts[0].lower().startswith(city_name.lower()):
             parts = parts[1:]
         path = a["href"].split("?")[0].replace(BASE, "")
         out[path] = parts
@@ -197,6 +208,11 @@ def _parse_item(item: dict, locs: Dict[str, List[str]], market: Optional[str],
     )
 
 
+def _no_results(soup: BeautifulSoup) -> bool:
+    """Komunikat "Brak wyników spełniających Twoje kryteria wyszukiwania"."""
+    return any("brak wyników" in el.get_text(" ", strip=True).lower() for el in soup.select(".alert__title"))
+
+
 def _last_page(soup: BeautifulSoup) -> Optional[int]:
     nums = [int(m) for a in soup.select(".pagination a[href]")
             for m in re.findall(r"PageNumber=(\d+)", a["href"])]
@@ -205,7 +221,9 @@ def _last_page(soup: BeautifulSoup) -> Optional[int]:
 
 def _scrape_market(session, config: dict, rynek: Optional[str], market: Optional[str],
                    max_pages: int, seen: set, deal: str = "sprzedaz") -> Tuple[List[Listing], bool]:
-    search_url = SEARCH_URL if deal == "sprzedaz" else RENT_URL
+    path, city_name = _location(config)
+    search_url = BASE + ("/mieszkanie/sprzedam/" if deal == "sprzedaz" else "/mieszkanie/wynajme/") + path
+    city_name = city_name or "Wrocław"
     label = rynek or deal
     results: List[Listing] = []
     first_ok = False
@@ -224,6 +242,10 @@ def _scrape_market(session, config: dict, rynek: Optional[str], market: Optional
         soup = BeautifulSoup(resp.text, "lxml")
         items = _ld_items(soup)
         if page == 1:
+            if not items and not soup.select("article.sneakpeak") and _no_results(soup):
+                # mała miejscowość: portal po prostu nie ma takich ofert
+                log.info("domiporta %s: brak ofert (%s)", label, resp.url)
+                return results, True
             if not items and not soup.select("article.sneakpeak"):
                 raise RuntimeError(
                     f"domiporta: brak ofert na 1. stronie ({label}) — zmiana struktury strony lub blokada? "
@@ -232,7 +254,7 @@ def _scrape_market(session, config: dict, rynek: Optional[str], market: Optional
             last_page = _last_page(soup)
         if not items:
             break
-        locs = _tile_locations(soup)
+        locs = _tile_locations(soup, city_name)
         fees = _tile_fees(soup) if deal != "sprzedaz" else {}
         new = 0
         for it in items:
@@ -278,8 +300,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    from scraper.cities import location_for
+
+    # użycie: python -m scraper.sources.domiporta [sprzedaz|wynajem] [miejscowość] [max_pages]
     deal_arg = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
-    cfg["max_pages"] = 2
+    cfg["city"] = location_for(sys.argv[2] if len(sys.argv) > 2 else "wroclaw", SOURCE)
+    cfg["max_pages"] = int(sys.argv[3]) if len(sys.argv) > 3 else 2
     deal_cfg = (cfg.get("deals") or {}).get(deal_arg) or {}
     if "prefilter" in deal_cfg:
         cfg["prefilter"] = deal_cfg.get("prefilter") or {}

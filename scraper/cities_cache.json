@@ -1,0 +1,115 @@
+{
+  "krakow": {
+    "slug": "krakow",
+    "name": "Kraków",
+    "voivodeship": "małopolskie",
+    "county": "Kraków",
+    "municipality": "Kraków",
+    "lat": 50.07567,
+    "lon": 19.93084,
+    "resolved": "2026-10-14T12:03:22Z",
+    "portals": {
+      "olx": {
+        "city_id": 8959,
+        "region_id": 4,
+        "slug": "krakow"
+      },
+      "otodom": {
+        "location": "malopolskie/krakow/krakow/krakow"
+      },
+      "gratka": {
+        "slug": "krakow",
+        "location_id": "34933"
+      },
+      "morizon": {
+        "slug": "krakow",
+        "location_id": "34933"
+      },
+      "nieruchomosci_online": {
+        "base": "https://www.nieruchomosci-online.pl/szukaj.html",
+        "city_param": "Kraków:5600",
+        "id": "5600"
+      },
+      "domiporta": {
+        "path": "malopolskie/krakow",
+        "id": 25041
+      }
+    },
+    "failed": {}
+  },
+  "siechnice": {
+    "slug": "siechnice",
+    "name": "Siechnice",
+    "voivodeship": "dolnośląskie",
+    "county": "wrocławski",
+    "municipality": "Siechnice",
+    "lat": 51.03348,
+    "lon": 17.14752,
+    "resolved": "2026-10-14T11:57:17Z",
+    "portals": {
+      "olx": {
+        "city_id": 54553,
+        "region_id": 3,
+        "slug": "siechnice"
+      },
+      "otodom": {
+        "location": "dolnoslaskie/wroclawski/siechnice/siechnice"
+      },
+      "gratka": {
+        "slug": "siechnice",
+        "location_id": "89271"
+      },
+      "morizon": {
+        "slug": "wroclawski/miasto-siechnice",
+        "location_id": "89271"
+      },
+      "nieruchomosci_online": {
+        "base": "https://www.nieruchomosci-online.pl/szukaj.html",
+        "city_param": "Siechnice:28774",
+        "id": "28774"
+      },
+      "domiporta": {
+        "path": "dolnoslaskie/siechnice",
+        "id": 45886
+      }
+    },
+    "failed": {}
+  },
+  "wroclaw": {
+    "slug": "wroclaw",
+    "name": "Wrocław",
+    "voivodeship": "dolnośląskie",
+    "county": "Wrocław",
+    "municipality": "Wrocław",
+    "lat": 51.10195,
+    "lon": 17.03667,
+    "portals": {
+      "olx": {
+        "city_id": 19701,
+        "region_id": 3,
+        "slug": "wroclaw"
+      },
+      "otodom": {
+        "location": "dolnoslaskie/wroclaw/wroclaw/wroclaw"
+      },
+      "gratka": {
+        "slug": "wroclaw",
+        "location_id": "88889"
+      },
+      "morizon": {
+        "slug": "wroclaw",
+        "location_id": "88889"
+      },
+      "nieruchomosci_online": {
+        "base": "https://wroclaw.nieruchomosci-online.pl/szukaj.html",
+        "city_param": "Wrocław",
+        "id": "17876"
+      },
+      "domiporta": {
+        "path": "dolnoslaskie/wroclaw",
+        "id": 57389
+      }
+    },
+    "failed": {}
+  }
+}

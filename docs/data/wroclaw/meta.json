@@ -1,7 +1,9 @@
 {
-  "last_run": "2026-10-14T11:03:32Z",
+  "city": "wroclaw",
+  "city_name": "Wrocław",
+  "last_run": "2026-10-14T16:45:46Z",
   "first_run": "2026-10-13T21:21:33Z",
-  "finished": "2026-10-14T11:03:39Z",
+  "finished": "2026-10-14T16:45:53Z",
   "drop_after_days": 14,
   "enabled_deals": [
     "sprzedaz",
@@ -125,33 +127,33 @@
       "label": "Pokoje",
       "file": "pokoj.json",
       "first_run": "2026-10-14T09:56:12Z",
-      "last_run": "2026-10-14T11:03:32Z",
-      "total": 1055,
-      "active": 1049,
+      "last_run": "2026-10-14T16:45:46Z",
+      "total": 1056,
+      "active": 1050,
       "dup_groups": 13,
       "geo": {
         "brak": 1,
-        "dokładna": 802,
+        "dokładna": 803,
         "osiedle": 23,
         "ulica": 229
       },
       "sources": {
         "gratka": {
-          "count": 39,
-          "duration_s": 3.5,
-          "last_run": "2026-10-14T10:48:36Z",
+          "count": 40,
+          "duration_s": 5.0,
+          "last_run": "2026-10-14T16:45:51Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-10-14T10:48:36Z",
+          "last_ok": "2026-10-14T16:45:51Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "nieruchomosci_online": {
           "count": 50,
-          "duration_s": 6.6,
-          "last_run": "2026-10-14T11:03:39Z",
+          "duration_s": 6.2,
+          "last_run": "2026-10-14T16:45:53Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-10-14T11:03:39Z",
+          "last_ok": "2026-10-14T16:45:53Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "olx": {

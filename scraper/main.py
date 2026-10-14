@@ -1,12 +1,14 @@
 """Punkt wejścia: `python -m scraper.main`.
 
-Dla każdego włączonego typu ogłoszeń (kupno / wynajem / pokoje) uruchamia
-wszystkie włączone portale, które ten typ obsługują, scala wyniki z poprzednim
-stanem (docs/data/<typ>.json), wykrywa duplikaty między portalami i zapisuje
-docs/data/meta.json ze statusem każdego portalu dla każdego typu.
+Dla każdej miejscowości z config.yaml (`cities:`) i każdego włączonego typu ogłoszeń
+(kupno / wynajem / pokoje) uruchamia wszystkie włączone portale, które ten typ
+obsługują i znają tę miejscowość (scraper/cities.py), scala wyniki z poprzednim
+stanem (docs/data/<miejscowość>/<typ>.json), wykrywa duplikaty między portalami
+i zapisuje docs/data/<miejscowość>/meta.json ze statusem każdego portalu dla
+każdego typu oraz docs/data/cities.json (lista miejscowości dla strony).
 
-Różne portale pobieramy równolegle, ale typy ogłoszeń jednego portalu po kolei
-(żeby nie zasypywać jednego serwera zapytaniami).
+Różne portale pobieramy równolegle, ale miejscowości i typy ogłoszeń jednego
+portalu po kolei (żeby nie zasypywać jednego serwera zapytaniami).
 """
 from __future__ import annotations
 
@@ -31,6 +33,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
+from scraper.cities import DEFAULT_CITY, ensure_cities, portal_location
 from scraper.features import enrich
 from scraper.geo import GEO_EXACT, geocode_listings
 from scraper.models import BUILDING_TYPES, CONDITIONS, DEALS
@@ -39,12 +42,14 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.yaml"
 DATA_DIR = ROOT / "docs" / "data"
 LEGACY_LISTINGS_PATH = DATA_DIR / "listings.json"   # stary format (tylko sprzedaż)
-META_PATH = DATA_DIR / "meta.json"
+LEGACY_META_PATH = DATA_DIR / "meta.json"           # układ sprzed miejscowości (tylko Wrocław)
+META_PATH = LEGACY_META_PATH                        # zgodność wsteczna (importy)
+CITIES_PATH = DATA_DIR / "cities.json"              # lista miejscowości dla strony
 
 MAX_IMAGES = 1  # strona pokazuje tylko miniaturę
 MAX_DESCRIPTION = 400  # opis służy tylko do wyszukiwania po słowach
 MAX_PRICE_HISTORY = 50
-PAUSE_BETWEEN_DEALS = 3.0  # s przerwy między typami ogłoszeń na tym samym portalu
+PAUSE_BETWEEN_DEALS = 3.0  # s przerwy między typami ogłoszeń / miejscowościami na tym samym portalu
 
 DEAL_LABELS = {"sprzedaz": "Kupno", "wynajem": "Wynajem", "pokoj": "Pokoje"}
 RENT_DEALS = ("wynajem", "pokoj")
@@ -52,8 +57,16 @@ RENT_DEALS = ("wynajem", "pokoj")
 log = logging.getLogger("scraper")
 
 
-def deal_path(deal: str) -> Path:
-    return DATA_DIR / ("%s.json" % deal)
+def city_dir(city: str = DEFAULT_CITY) -> Path:
+    return DATA_DIR / city
+
+
+def deal_path(deal: str, city: str = DEFAULT_CITY) -> Path:
+    return city_dir(city) / ("%s.json" % deal)
+
+
+def meta_path(city: str = DEFAULT_CITY) -> Path:
+    return city_dir(city) / "meta.json"
 
 
 # ---------------------------------------------------------------- helpers
@@ -192,12 +205,15 @@ def accepts_deal(module) -> bool:
         return True
 
 
-def run_source(name: str, module, config: dict, deal: str) -> Tuple[List[dict], Optional[str]]:
-    """Zwraca (lista ofert jako dict, komunikat błędu albo None)."""
+def run_source(name: str, module, config: dict, deal: str,
+               location: Optional[dict] = None) -> Tuple[List[dict], Optional[str]]:
+    """Zwraca (lista ofert jako dict, komunikat błędu albo None).
+    location — lokalizacja miejscowości w tym portalu (config["city"] dla scrapera)."""
     try:
         cfg = copy.deepcopy(config)
         cfg["prefilter"] = dict(config["deals"][deal]["prefilter"])
         cfg["deal"] = deal
+        cfg["city"] = copy.deepcopy(location) if location else None
         if accepts_deal(module):
             listings = module.scrape(cfg, deal)
         else:
@@ -562,9 +578,9 @@ def detect_duplicates(listings: List[dict], deal: str = "sprzedaz") -> None:
 
 # ---------------------------------------------------------------- state files
 
-def load_state(deal: str) -> Dict[str, dict]:
-    raw = load_json(deal_path(deal), None)
-    if raw is None and deal == "sprzedaz":
+def load_state(deal: str, city: str = DEFAULT_CITY) -> Dict[str, dict]:
+    raw = load_json(deal_path(deal, city), None)
+    if raw is None and deal == "sprzedaz" and city == DEFAULT_CITY:
         raw = load_json(LEGACY_LISTINGS_PATH, [])
     if isinstance(raw, dict):
         raw = raw.get("listings") or []
@@ -580,13 +596,29 @@ def load_state(deal: str) -> Dict[str, dict]:
 
 
 def migrate_legacy() -> None:
-    """docs/data/listings.json (stary format, tylko sprzedaż) → docs/data/sprzedaz.json."""
+    """Stare układy danych (tylko Wrocław) → docs/data/wroclaw/:
+    docs/data/listings.json (najstarszy, tylko sprzedaż) → wroclaw/sprzedaz.json,
+    docs/data/<typ>.json i docs/data/meta.json → wroclaw/<typ>.json, wroclaw/meta.json."""
+    moves = [(DATA_DIR / ("%s.json" % d), deal_path(d)) for d in DEALS]
+    moves.append((LEGACY_META_PATH, meta_path()))
+    for old, new in moves:
+        if not old.exists():
+            continue
+        try:
+            if not new.exists():
+                new.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(str(old), str(new))
+                log.info("Przeniesiono %s → %s", old.relative_to(ROOT), new.relative_to(ROOT))
+            else:
+                old.unlink()  # nowszy plik już jest — stary jest zbędny
+        except OSError as e:
+            log.warning("Nie udało się przenieść %s: %s", old, e)
     if not LEGACY_LISTINGS_PATH.exists():
         return
     if not deal_path("sprzedaz").exists():
         state = load_state("sprzedaz")
         save_state("sprzedaz", list(state.values()))
-        log.info("Przeniesiono %d ofert z listings.json do sprzedaz.json", len(state))
+        log.info("Przeniesiono %d ofert z listings.json do wroclaw/sprzedaz.json", len(state))
     try:
         LEGACY_LISTINGS_PATH.unlink()
     except OSError as e:
@@ -619,20 +651,33 @@ def compact_record(r: dict) -> dict:
     return out
 
 
-def save_state(deal: str, listings: List[dict]) -> None:
+def save_state(deal: str, listings: List[dict], city: str = DEFAULT_CITY) -> None:
     listings = sorted(listings, key=lambda r: (r.get("first_seen") or "", r.get("key")), reverse=True)
-    atomic_write_json(deal_path(deal), [compact_record(r) for r in listings], compact=True)
+    atomic_write_json(deal_path(deal, city), [compact_record(r) for r in listings], compact=True)
+
+
+def city_bbox(entry: dict) -> Optional[Tuple[float, float, float, float]]:
+    """Przybliżone granice miejscowości bez gazetteera (S, W, N, E): ~20 km wokół punktu."""
+    try:
+        lat, lon = float(entry["lat"]), float(entry["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (lat - 0.18, lon - 0.28, lat + 0.18, lon + 0.28)
 
 
 # ---------------------------------------------------------------- main
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Scraper ofert mieszkań we Wrocławiu (kupno, wynajem, pokoje)")
+    ap = argparse.ArgumentParser(description="Scraper ofert mieszkań (kupno, wynajem, pokoje) z wielu portali")
     ap.add_argument("--max-pages", type=int, default=None, help="nadpisuje max_pages z config.yaml")
     ap.add_argument("--sources", default=None,
                     help="lista portali po przecinku (np. otodom,olx); pozostałe nie są ruszane")
     ap.add_argument("--deals", default=None,
                     help="typy ogłoszeń po przecinku (%s); pozostałe nie są ruszane" % ",".join(DEALS))
+    ap.add_argument("--cities", default=None,
+                    help="tylko te miejscowości z config.yaml (slugi po przecinku, np. wroclaw); pozostałe nie są ruszane")
+    ap.add_argument("--no-resolve", action="store_true",
+                    help="nie ustalaj automatycznie nowych miejscowości (tylko scraper/cities_cache.json)")
     ap.add_argument("--config", default=str(CONFIG_PATH))
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -642,6 +687,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stderr,
     )
+    t_start = time.time()
 
     config = load_config(Path(args.config))
     if args.max_pages is not None:
@@ -665,159 +711,216 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     else:
         deals_to_run = enabled_deals
 
+    # miejscowości: wpisy z scraper/cities_cache.json (nowe ustalane automatycznie)
+    all_cities = ensure_cities(config, resolve_missing=not args.no_resolve)
+    if not all_cities:
+        log.error("Brak miejscowości do pobrania (sprawdź `cities:` w config.yaml)")
+        return 1
+    if args.cities:
+        wanted_c = [c.strip() for c in args.cities.split(",") if c.strip()]
+        cities = [c for c in all_cities if c["slug"] in wanted_c]
+        missing = [c for c in wanted_c if c not in {x["slug"] for x in cities}]
+        if missing:
+            log.warning("Pomijam miejscowości spoza config.yaml / nieustalone: %s", ", ".join(missing))
+    else:
+        cities = all_cities
+
     migrate_legacy()
 
     start = utc_now()
-    prev_meta = load_json(META_PATH, {}) or {}
-    if not isinstance(prev_meta, dict):
-        prev_meta = {}
-    prev_deals_meta = prev_meta.get("deals") or {}
-    if not prev_deals_meta and prev_meta.get("sources"):
-        # stary meta.json: statusy dotyczyły sprzedaży
-        prev_deals_meta = {"sprzedaz": {"sources": prev_meta.get("sources") or {},
-                                        "first_run": prev_meta.get("first_run")}}
 
-    # --- które (portal, typ) uruchamiamy
+    # --- które (portal, miejscowość, typ) uruchamiamy
     modules: Dict[str, Any] = {}
     import_errors: Dict[str, str] = {}
-    plan: Dict[str, List[str]] = {}
+    supported: Dict[str, Tuple[str, ...]] = {}
     for name in to_run:
         try:
             modules[name] = load_module(name)
+            supported[name] = module_deals(modules[name])
         except Exception as e:
             log.error("[%s] nie można wczytać modułu: %s", name, e)
             import_errors[name] = ("%s: %s" % (type(e).__name__, e))[:500]
-            plan[name] = list(deals_to_run)  # oznaczymy jako błąd w każdym typie
+            supported[name] = tuple(deals_to_run)  # oznaczymy jako błąd w każdym typie
             continue
-        supported = module_deals(modules[name])
-        plan[name] = [d for d in deals_to_run if d in supported]
-        skipped = [d for d in deals_to_run if d not in supported]
+        skipped = [d for d in deals_to_run if d not in supported[name]]
         if skipped:
             log.info("[%s] nie obsługuje: %s", name, ", ".join(skipped))
 
-    # --- pobieranie: portale równolegle, typy jednego portalu po kolei
-    results: Dict[Tuple[str, str], Tuple[List[dict], Optional[str], float, str]] = {}
+    plan: Dict[str, List[Tuple[dict, str, Optional[dict]]]] = {n: [] for n in to_run}
+    unsupported: Dict[str, Dict[str, str]] = {}   # miejscowość -> {portal: powód}
+    for city in cities:
+        for name in to_run:
+            loc = portal_location(city, name)
+            if loc is None and name not in import_errors:
+                reason = (city.get("failed") or {}).get(name) or "brak lokalizacji w scraper/cities_cache.json"
+                unsupported.setdefault(city["slug"], {})[name] = (
+                    "Portal nie zna tej miejscowości — pomijam (%s)" % reason)[:300]
+                log.info("[%s/%s] portal nie zna tej miejscowości — pomijam", name, city["slug"])
+                continue
+            for deal in deals_to_run:
+                if deal in supported[name]:
+                    plan[name].append((city, deal, loc))
 
-    def run_all_deals(name: str) -> None:
-        for i, deal in enumerate(plan[name]):
+    # --- pobieranie: portale równolegle, miejscowości i typy jednego portalu po kolei
+    results: Dict[Tuple[str, str, str], Tuple[List[dict], Optional[str], float, str]] = {}
+
+    def run_all_tasks(name: str) -> None:
+        for i, (city, deal, loc) in enumerate(plan[name]):
+            key = (name, city["slug"], deal)
             if name in import_errors:
-                results[(name, deal)] = ([], import_errors[name], 0.0, iso(utc_now()))
+                results[key] = ([], import_errors[name], 0.0, iso(utc_now()))
                 continue
             if i:
                 time.sleep(PAUSE_BETWEEN_DEALS)
             t0 = time.time()
-            log.info("[%s/%s] start", name, deal)
-            items, err = run_source(name, modules[name], config, deal)
+            log.info("[%s/%s/%s] start", name, city["slug"], deal)
+            items, err = run_source(name, modules[name], config, deal, loc)
             dt = round(time.time() - t0, 1)
-            results[(name, deal)] = (items, err, dt, iso(utc_now()))
-            log.info("[%s/%s] %s: %d ofert w %.1fs", name, deal, "BŁĄD" if err else "ok", len(items), dt)
+            results[key] = (items, err, dt, iso(utc_now()))
+            log.info("[%s/%s/%s] %s: %d ofert w %.1fs", name, city["slug"], deal,
+                     "BŁĄD" if err else "ok", len(items), dt)
 
     names = [n for n in to_run if plan.get(n)]
     if names:
         with ThreadPoolExecutor(max_workers=len(names)) as pool:
-            list(pool.map(run_all_deals, names))
+            list(pool.map(run_all_tasks, names))
 
-    # --- scalanie, osobno dla każdego typu
-    deals_meta: Dict[str, dict] = {}
-    for deal, prev in prev_deals_meta.items():
-        if deal in DEALS and isinstance(prev, dict):
-            deals_meta[deal] = prev
+    # --- scalanie, osobno dla każdej miejscowości i typu
     all_failed: List[str] = []
+    selective = bool(args.sources)
+    for city in cities:
+        slug = city["slug"]
+        prev_meta = load_json(meta_path(slug), {}) or {}
+        if not isinstance(prev_meta, dict):
+            prev_meta = {}
+        prev_deals_meta = prev_meta.get("deals") or {}
+        if not prev_deals_meta and prev_meta.get("sources"):
+            # stary meta.json: statusy dotyczyły sprzedaży
+            prev_deals_meta = {"sprzedaz": {"sources": prev_meta.get("sources") or {},
+                                            "first_run": prev_meta.get("first_run")}}
+        deals_meta: Dict[str, dict] = {}
+        for deal, prev in prev_deals_meta.items():
+            if deal in DEALS and isinstance(prev, dict):
+                deals_meta[deal] = prev
+        city_unsupported = unsupported.get(slug, {})
+        if selective:  # przebieg tylko części portali — reszta wpisów bez zmian
+            city_unsupported = dict(prev_meta.get("unsupported") or {}, **city_unsupported)
+            for n in to_run:
+                if n not in unsupported.get(slug, {}):
+                    city_unsupported.pop(n, None)
 
-    for deal in deals_to_run:
-        prev_dm = prev_deals_meta.get(deal) or {}
-        prev_src_meta = prev_dm.get("sources") or {}
-        state = load_state(deal)
+        for deal in deals_to_run:
+            prev_dm = prev_deals_meta.get(deal) or {}
+            prev_src_meta = prev_dm.get("sources") or {}
+            state = load_state(deal, slug)
+            known_sources = {r.get("source") for r in state.values()}
 
-        scraped: Dict[str, List[dict]] = {}
-        src_meta: Dict[str, dict] = {}
-        ok_sources: Set[str] = set()
-        failed: Set[str] = set()
+            scraped: Dict[str, List[dict]] = {}
+            src_meta: Dict[str, dict] = {}
+            ok_sources: Set[str] = set()
+            failed: Set[str] = set()
 
-        for name in to_run:
-            if (name, deal) not in results:
-                continue
-            items, err, dt, finished = results[(name, deal)]
-            prev = prev_src_meta.get(name) or {}
-            info = {"count": len(items), "duration_s": dt, "last_run": finished}
-            if err:
-                info.update(status="error", error=err, last_ok=prev.get("last_ok"))
-                failed.add(name)
-            elif not items:
-                # 0 ofert bez wyjątku to prawie na pewno blokada / zmiana strony —
-                # nie wygaszamy wtedy starych ofert.
-                info.update(status="error",
-                            error="Portal nie zwrócił żadnych ofert (możliwa blokada lub zmiana strony).",
-                            last_ok=prev.get("last_ok"))
-                failed.add(name)
+            for name in to_run:
+                if (name, slug, deal) not in results:
+                    continue
+                items, err, dt, finished = results[(name, slug, deal)]
+                prev = prev_src_meta.get(name) or {}
+                info = {"count": len(items), "duration_s": dt, "last_run": finished}
+                if err:
+                    info.update(status="error", error=err, last_ok=prev.get("last_ok"))
+                    failed.add(name)
+                elif not items and (name in known_sources or slug == DEFAULT_CITY):
+                    # 0 ofert bez wyjątku tam, gdzie wcześniej były, to prawie na pewno
+                    # blokada / zmiana strony — nie wygaszamy wtedy starych ofert.
+                    info.update(status="error",
+                                error="Portal nie zwrócił żadnych ofert (możliwa blokada lub zmiana strony).",
+                                last_ok=prev.get("last_ok"))
+                    failed.add(name)
+                else:
+                    # (w małej miejscowości portal może po prostu nie mieć ofert danego typu)
+                    info.update(status="ok", error=None, last_ok=finished)
+                    ok_sources.add(name)
+                    ok_sources.update(d["source"] for d in items)
+                    scraped[name] = items
+                # pierwszy udany przebieg: oferty z niego to „stan wyjściowy”, nie nowości
+                info["first_ok"] = (prev.get("first_ok")
+                                    or (prev_dm.get("first_run") if prev.get("last_ok") else None)
+                                    or (iso(start) if info["status"] == "ok" else None))
+                src_meta[name] = info
+
+            # portale nieuruchamiane w tym przebiegu — w meta zostaje poprzedni stan
+            for name, prev in prev_src_meta.items():
+                if name not in src_meta and name not in city_unsupported and (selective or configured.get(name)):
+                    src_meta[name] = prev
+
+            if selective:
+                untouched = (known_sources - ok_sources) | failed
             else:
-                info.update(status="ok", error=None, last_ok=finished)
-                ok_sources.add(name)
-                ok_sources.update(d["source"] for d in items)
-                scraped[name] = items
-            # pierwszy udany przebieg: oferty z niego to „stan wyjściowy”, nie nowości
-            info["first_ok"] = (prev.get("first_ok")
-                                or (prev_dm.get("first_run") if prev.get("last_ok") else None)
-                                or (iso(start) if info["status"] == "ok" else None))
-            src_meta[name] = info
+                untouched = set(failed)
 
-        # portale nieuruchamiane w tym przebiegu — w meta zostaje poprzedni stan
-        selective = bool(args.sources)
-        for name, prev in prev_src_meta.items():
-            if name not in src_meta and (selective or configured.get(name)):
-                src_meta[name] = prev
+            merged = merge(state, scraped, ok_sources, untouched, start,
+                           int(config.get("drop_after_days") or 14),
+                           config.get("partial_sources") or {})
+            listings = list(merged.values())
+            for r in listings:
+                r["deal"] = deal
+            detect_duplicates(listings, deal)
+            try:
+                geo_stats = geocode_listings(listings, city=slug,
+                                             bbox=None if slug == DEFAULT_CITY else city_bbox(city))
+                log.info("[%s/%s] lokalizacje: %s", slug, deal,
+                         ", ".join("%s=%d" % kv for kv in sorted(geo_stats.items())))
+            except Exception as e:  # geokodowanie jest dodatkiem — nie może zepsuć przebiegu
+                log.warning("[%s/%s] geokodowanie nie powiodło się: %s", slug, deal, e)
+                geo_stats = {}
+            save_state(deal, listings, slug)
 
-        known_sources = {r.get("source") for r in state.values()}
-        if selective:
-            untouched = (known_sources - ok_sources) | failed
-        else:
-            untouched = set(failed)
+            n_active = sum(1 for r in listings if r.get("active"))
+            n_groups = len({r["dup_group"] for r in listings if r.get("dup_group")})
+            deals_meta[deal] = {
+                "label": DEAL_LABELS[deal],
+                "file": deal_path(deal, slug).name,
+                "first_run": prev_dm.get("first_run") or iso(start),
+                "last_run": iso(start),
+                "total": len(listings),
+                "active": n_active,
+                "dup_groups": n_groups,
+                "geo": dict(sorted(geo_stats.items())),
+                "sources": dict(sorted(src_meta.items())),
+            }
+            all_failed.extend("%s/%s/%s" % (n, slug, deal) for n in sorted(failed))
+            log.info("[%s/%s] zapisano %d ofert (%d aktywnych, %d grup duplikatów)",
+                     slug, deal, len(listings), n_active, n_groups)
 
-        merged = merge(state, scraped, ok_sources, untouched, start,
-                       int(config.get("drop_after_days") or 14),
-                       config.get("partial_sources") or {})
-        listings = list(merged.values())
-        for r in listings:
-            r["deal"] = deal
-        detect_duplicates(listings, deal)
-        try:
-            geo_stats = geocode_listings(listings)
-            log.info("[%s] lokalizacje: %s", deal,
-                     ", ".join("%s=%d" % kv for kv in sorted(geo_stats.items())))
-        except Exception as e:  # geokodowanie jest dodatkiem — nie może zepsuć przebiegu
-            log.warning("[%s] geokodowanie nie powiodło się: %s", deal, e)
-            geo_stats = {}
-        save_state(deal, listings)
-
-        n_active = sum(1 for r in listings if r.get("active"))
-        n_groups = len({r["dup_group"] for r in listings if r.get("dup_group")})
-        deals_meta[deal] = {
-            "label": DEAL_LABELS[deal],
-            "file": deal_path(deal).name,
-            "first_run": prev_dm.get("first_run") or iso(start),
+        # typy wyłączone w config.yaml nie pokazują się na stronie
+        shown_deals = [d for d in DEALS if d in enabled_deals or d in deals_to_run]
+        meta = {
+            "city": slug,
+            "city_name": city.get("name") or slug,
             "last_run": iso(start),
-            "total": len(listings),
-            "active": n_active,
-            "dup_groups": n_groups,
-            "geo": dict(sorted(geo_stats.items())),
-            "sources": dict(sorted(src_meta.items())),
+            "first_run": prev_meta.get("first_run") or iso(start),
+            "finished": iso(utc_now()),
+            "drop_after_days": config.get("drop_after_days"),
+            "enabled_deals": shown_deals,
+            "deals": {d: deals_meta[d] for d in DEALS if d in deals_meta},
         }
-        all_failed.extend("%s/%s" % (n, deal) for n in sorted(failed))
-        log.info("[%s] zapisano %d ofert (%d aktywnych, %d grup duplikatów)",
-                 deal, len(listings), n_active, n_groups)
+        if city_unsupported:
+            meta["unsupported"] = dict(sorted(city_unsupported.items()))
+        atomic_write_json(meta_path(slug), meta)
 
-    # typy wyłączone w config.yaml nie pokazują się na stronie
-    shown_deals = [d for d in DEALS if d in enabled_deals or d in deals_to_run]
-    meta = {
+    runtime = round(time.time() - t_start, 1)
+    prev_index = load_json(CITIES_PATH, {}) or {}
+    atomic_write_json(CITIES_PATH, {
+        "default": all_cities[0]["slug"],
+        "cities": [{"slug": c["slug"], "name": c.get("name") or c["slug"],
+                    "lat": c.get("lat"), "lon": c.get("lon")} for c in all_cities],
+        "first_run": (prev_index.get("first_run") if isinstance(prev_index, dict) else None) or iso(start),
         "last_run": iso(start),
-        "first_run": prev_meta.get("first_run") or iso(start),
         "finished": iso(utc_now()),
-        "drop_after_days": config.get("drop_after_days"),
-        "enabled_deals": shown_deals,
-        "deals": {d: deals_meta[d] for d in DEALS if d in deals_meta},
-    }
-    atomic_write_json(META_PATH, meta)
-    log.info("Gotowe. Błędy: %s", ", ".join(all_failed) or "brak")
+        "runtime_s": runtime,
+    })
+    log.info("Gotowe w %.0fs (%s). Błędy: %s", runtime,
+             ", ".join(c["slug"] for c in cities), ", ".join(all_failed) or "brak")
     return 0
 
 
