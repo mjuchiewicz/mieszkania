@@ -1,1 +1,51 @@
-{}
+{
+  "last_run": "2026-10-14T01:13:55Z",
+  "first_run": "2026-10-14T01:13:55Z",
+  "finished": "2026-10-14T01:27:10Z",
+  "total": 13913,
+  "active": 13913,
+  "dup_groups": 2411,
+  "drop_after_days": 14,
+  "sources": {
+    "domiporta": {
+      "count": 2646,
+      "duration_s": 209.3,
+      "last_run": "2026-10-14T01:27:07Z",
+      "status": "ok",
+      "error": null,
+      "last_ok": "2026-10-14T01:27:07Z"
+    },
+    "gratka": {
+      "count": 6547,
+      "duration_s": 792.0,
+      "last_run": "2026-10-14T01:27:07Z",
+      "status": "ok",
+      "error": null,
+      "last_ok": "2026-10-14T01:27:07Z"
+    },
+    "nieruchomosci_online": {
+      "count": 3135,
+      "duration_s": 238.1,
+      "last_run": "2026-10-14T01:27:07Z",
+      "status": "ok",
+      "error": null,
+      "last_ok": "2026-10-14T01:27:07Z"
+    },
+    "olx": {
+      "count": 0,
+      "duration_s": 0.2,
+      "last_run": "2026-10-14T01:27:07Z",
+      "status": "error",
+      "error": "RuntimeError: olx: nie udało się pobrać pierwszej strony API (https://www.olx.pl/api/v1/offers/): 403 Client Error: Forbidden for url: https://www.olx.pl/api/v1/offers/?offset=0&limit=40&category_id=14&region_id=3&city_id=19701&sort_by=created_at%3Adesc&filter_float_price%3Afrom=200000&filter_float_price%3Ato=1500000&filter_float_m%3Afrom=20",
+      "last_ok": null
+    },
+    "otodom": {
+      "count": 1585,
+      "duration_s": 79.9,
+      "last_run": "2026-10-14T01:27:07Z",
+      "status": "ok",
+      "error": null,
+      "last_ok": "2026-10-14T01:27:07Z"
+    }
+  }
+}
