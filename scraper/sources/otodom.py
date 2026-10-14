@@ -1,10 +1,21 @@
-"""Scraper Otodom — mieszkania na sprzedaż we Wrocławiu.
+"""Scraper Otodom — mieszkania na sprzedaż, na wynajem i pokoje we Wrocławiu.
 
 Strony wyników to Next.js; dane ofert siedzą w <script id="__NEXT_DATA__">
 pod props.pageProps.data.searchAds.items. Lista nie zawiera pola "rynek",
-więc pobieramy osobno rynek wtórny i pierwotny (filtr market=...) i rynek
-przypisujemy z zapytania. Strony obu rynków są przeplatane, a łączny limit
-żądań to config["max_pages"].
+więc przy sprzedaży pobieramy osobno rynek wtórny i pierwotny (filtr market=...)
+i rynek przypisujemy z zapytania. Strony obu rynków są przeplatane, a łączny
+limit żądań (na jeden typ ogłoszenia) to min(max_pages, otodom_max_pages).
+
+Wynajem / pokoje: jeden strumień bez podziału na rynki. W __NEXT_DATA__
+totalPrice = czynsz najmu zł/mies. (-> price), rentPrice = czynsz
+administracyjny/opłaty dodatkowo (-> rent_extra). Kaucji ani daty dostępności
+lista wyników nie zawiera (są tylko na stronie oferty, której nie pobieramy
+ze względu na WAF), więc deposit/available_from zostają None. Pokoje mają
+estate=ROOM (metraż zwykle jest, liczby pokoi/piętra brak).
+
+Cechy: floorNumber -> floor / floor_num; tagi listy (BALCONY, PARKING_SPOT,
+BASEMENT, ...) -> features; TOP_FLOOR -> floors_total = floor_num. Umeblowania,
+stanu i typu budynku lista nie zawiera (uzupełnia je scraper/features.py z opisu).
 """
 from __future__ import annotations
 
@@ -22,7 +33,20 @@ log = logging.getLogger(__name__)
 
 SOURCE = "otodom"
 BASE = "https://www.otodom.pl"
-SEARCH_URL = BASE + "/pl/wyniki/sprzedaz/mieszkanie/dolnoslaskie/wroclaw/wroclaw/wroclaw"
+DEALS = ("sprzedaz", "wynajem", "pokoj")
+_LOC = "/dolnoslaskie/wroclaw/wroclaw/wroclaw"
+SEARCH_URLS = {
+    "sprzedaz": BASE + "/pl/wyniki/sprzedaz/mieszkanie" + _LOC,
+    "wynajem": BASE + "/pl/wyniki/wynajem/mieszkanie" + _LOC,
+    "pokoj": BASE + "/pl/wyniki/wynajem/pokoj" + _LOC,
+}
+SEARCH_URL = SEARCH_URLS["sprzedaz"]  # zgodność wsteczna
+# (estate, transaction) oczekiwane w wynikach danego typu
+_DEAL_KIND = {
+    "sprzedaz": ("FLAT", "SELL"),
+    "wynajem": ("FLAT", "RENT"),
+    "pokoj": ("ROOM", "RENT"),
+}
 LIMIT = 72
 
 # Tempo / blokady: Otodom stoi za CloudFront + AWS WAF (reguła rate-based
@@ -42,9 +66,15 @@ BLOCK_STATUSES = (403, 405, 429)
 BACKOFF_S = (30, 60, 120, 180)  # dalej powtarzane 180 s aż do końca budżetu
 HEAD_PAGES = 6                 # tyle pierwszych (najnowszych) stron zawsze najpierw
 MAX_FAIL_STREAK = 3            # inne błędy z rzędu, po których porzucamy rynek
-MAX_RUNTIME_S = 8 * 60         # łączny budżet czasu (z backoffem)
+MAX_RUNTIME_S = 5 * 60         # budżet czasu na jeden typ ogłoszeń (z backoffem)
 
 MARKETS = (("SECONDARY", "wtorny"), ("PRIMARY", "pierwotny"))
+RENT_STREAMS = (("ALL", None),)  # wynajem/pokoje: bez filtra rynku
+
+
+def _streams(deal: str) -> Tuple[Tuple[str, Optional[str]], ...]:
+    """(klucz strumienia / wartość filtra market, etykieta rynku dla Listing)."""
+    return MARKETS if deal == "sprzedaz" else RENT_STREAMS
 
 _NEXT_DATA_RE = re.compile(
     r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S
@@ -60,6 +90,21 @@ _FLOORS = {
     "EIGHTH": "8", "NINTH": "9", "TENTH": "10", "ABOVE_TENTH": ">10",
     "HIGHER_THAN_TENTH": ">10", "GARRET": "poddasze",
 }
+# floorNumber -> floor_num (0 = parter, -1 = suterena, 11 = powyżej 10; poddasze = nieznane)
+_FLOOR_NUMS = {
+    "CELLAR": -1, "GROUND": 0, "FIRST": 1, "SECOND": 2, "THIRD": 3, "FOURTH": 4,
+    "FIFTH": 5, "SIXTH": 6, "SEVENTH": 7, "EIGHTH": 8, "NINTH": 9, "TENTH": 10,
+    "ABOVE_TENTH": 11, "HIGHER_THAN_TENTH": 11, "GARRET": None,
+}
+# tagi z listy wyników (item["tags"][].value) -> Listing.features.
+# Zaobserwowane: BALCONY, PARKING_SPOT, SECURE_BUILDING, SEPARATE_KITCHEN,
+# AIR_CONDITIONING, BASEMENT, TOP_FLOOR, STORAGE_ROOM, GROUND_FLOOR, TERRACE,
+# GARDEN, TWO_LEVEL (pokoje tagów nie mają). LIFT/GARAGE/LOGGIA — na zapas.
+_TAG_FEATURES = {
+    "BALCONY": "balkon", "TERRACE": "taras", "LOGGIA": "loggia", "GARDEN": "ogrodek",
+    "LIFT": "winda", "ELEVATOR": "winda", "PARKING_SPOT": "parking", "GARAGE": "garaz",
+    "BASEMENT": "piwnica", "STORAGE_ROOM": "komorka", "AIR_CONDITIONING": "klimatyzacja",
+}
 
 
 class OtodomError(RuntimeError):
@@ -72,13 +117,14 @@ class OtodomError(RuntimeError):
 
 def _build_params(config: dict, market: str, page: int) -> Dict[str, Any]:
     pre = config.get("prefilter") or {}
-    params: Dict[str, Any] = {
-        "limit": LIMIT,
-        "market": market,
+    params: Dict[str, Any] = {"limit": LIMIT}
+    if market and market != "ALL":
+        params["market"] = market
+    params.update({
         "by": "LATEST",
         "direction": "DESC",
         "page": page,
-    }
+    })
     if pre.get("price_min"):
         params["priceMin"] = int(pre["price_min"])
     if pre.get("price_max"):
@@ -92,9 +138,10 @@ class BlockedError(OtodomError):
     """Odpowiedź wyglądająca na blokadę / rate limit (403/405/429, captcha)."""
 
 
-def _fetch_search(session, params: Dict[str, Any]) -> Tuple[List[dict], dict]:
+def _fetch_search(session, params: Dict[str, Any],
+                  url: str = SEARCH_URL) -> Tuple[List[dict], dict]:
     """Zwraca (items, pagination). Rzuca BlockedError przy blokadzie, inne wyjątki przy błędzie."""
-    resp = session.get(SEARCH_URL, params=params, timeout=30)
+    resp = session.get(url, params=params, timeout=30)
     if resp.status_code in BLOCK_STATUSES:
         raise BlockedError(
             "HTTP %s (server=%s, cf-id=%s): %s"
@@ -119,14 +166,14 @@ def _fetch_search(session, params: Dict[str, Any]) -> Tuple[List[dict], dict]:
 
 
 def _fetch_with_backoff(session, params: Dict[str, Any], stats: Dict[str, Any],
-                        deadline: float) -> Tuple[List[dict], dict]:
+                        deadline: float, url: str = SEARCH_URL) -> Tuple[List[dict], dict]:
     """Pobiera stronę; przy blokadzie czeka (30, 60, 120, 180, 180... s) i ponawia
     TĘ SAMĄ stronę, dopóki starcza budżetu czasu."""
     attempt = 0
     while True:
         stats["requests"] += 1
         try:
-            return _fetch_search(session, params)
+            return _fetch_search(session, params, url)
         except BlockedError as e:
             stats["blocked"] += 1
             stats["slowdown"] = min(MAX_SLOWDOWN, stats["slowdown"] * SLOWDOWN_FACTOR)
@@ -135,7 +182,7 @@ def _fetch_with_backoff(session, params: Dict[str, Any], stats: Dict[str, Any],
                 raise BlockedError("%s (koniec budżetu czasu)" % e)
             attempt += 1
             log.warning("otodom %s strona %s: %s — czekam %ds (próba %d)",
-                        params.get("market"), params.get("page"), str(e)[:120], wait, attempt)
+                        params.get("market", "ALL"), params.get("page"), str(e)[:120], wait, attempt)
             time.sleep(wait)
 
 
@@ -186,6 +233,25 @@ def _floor(val: Any) -> Optional[str]:
         return _FLOORS[s]
     m = re.search(r"(\d+)", s)
     return m.group(1) if m else s.lower()
+
+
+def _floor_num(val: Any) -> Optional[int]:
+    if not val:
+        return None
+    s = str(val).upper()
+    if s in _FLOOR_NUMS:
+        return _FLOOR_NUMS[s]
+    m = re.search(r"-?\d+", s)
+    return int(m.group(0)) if m else None
+
+
+def _tags(item: dict) -> Set[str]:
+    out = set()
+    for t in item.get("tags") or []:
+        v = t.get("value") if isinstance(t, dict) else t
+        if isinstance(v, str):
+            out.add(v.upper())
+    return out
 
 
 def _district(location: dict) -> Optional[str]:
@@ -240,14 +306,29 @@ def _url(item: dict) -> str:
     return "%s/%s" % (BASE, href.lstrip("/"))
 
 
-def _parse_item(item: dict, market: str) -> Optional[Listing]:
-    if item.get("estate") != "FLAT":
+def _parse_item(item: dict, market: Optional[str],
+                deal: str = "sprzedaz") -> Optional[Listing]:
+    estate, transaction = _DEAL_KIND[deal]
+    if item.get("estate") != estate:
         return None
-    if item.get("transaction") not in (None, "SELL"):
+    if item.get("transaction") not in (None, transaction):
         return None
+    # sprzedaż: totalPrice = cena całkowita; wynajem/pokój: totalPrice = najem zł/mies.
     price = None if item.get("hidePrice") else _money(item.get("totalPrice"))
+    # wynajem/pokój: rentPrice = czynsz administracyjny / opłaty dodatkowo
+    rent_extra = _money(item.get("rentPrice")) if deal != "sprzedaz" else None
     area = item.get("areaInSquareMeters")
     location = item.get("location") or {}
+    floor = _floor(item.get("floorNumber"))
+    floor_num = _floor_num(item.get("floorNumber"))
+    tags = _tags(item)
+    if floor is None and "GROUND_FLOOR" in tags:
+        floor, floor_num = "parter", 0
+    # TOP_FLOOR = ostatnie piętro -> liczba pięter budynku = piętro oferty
+    floors_total = None
+    if "TOP_FLOOR" in tags and floor_num is not None and 0 <= floor_num <= 10:
+        floors_total = floor_num
+    features = sorted({_TAG_FEATURES[t] for t in tags if t in _TAG_FEATURES})
     desc = item.get("shortDescription")
     if isinstance(desc, str):
         desc = desc.strip()[:500] or None
@@ -258,10 +339,11 @@ def _parse_item(item: dict, market: str) -> Optional[Listing]:
         id=str(item["id"]),
         url=_url(item),
         title=(item.get("title") or "").strip(),
+        deal=deal,
         price=price,
         area=float(area) if area is not None else None,
         rooms=_rooms(item.get("roomsNumber")),
-        floor=_floor(item.get("floorNumber")),
+        floor=floor,
         district=_district(location),
         street=_street(location),
         market=market,
@@ -269,6 +351,10 @@ def _parse_item(item: dict, market: str) -> Optional[Listing]:
         images=_images(item),
         description=desc,
         created_at=item.get("createdAtFirst") or item.get("dateCreated"),
+        rent_extra=rent_extra,
+        floor_num=floor_num,
+        floors_total=floors_total,
+        features=features,
     )
 
 
@@ -286,12 +372,16 @@ def _within_prefilter(l: Listing, config: dict) -> bool:
     return True
 
 
-def _iter_units(items: Iterable[dict]) -> Iterable[Tuple[dict, bool]]:
-    """(item, is_related) — rozwija inwestycje do pojedynczych lokali."""
+def _iter_units(items: Iterable[dict], expand_investments: bool = True
+                ) -> Iterable[Tuple[dict, bool]]:
+    """(item, is_related) — rozwija inwestycje do pojedynczych lokali.
+    Przy wynajmie inwestycje (promowane, na sprzedaż) pomijamy."""
     for it in items:
         if not isinstance(it, dict):
             continue
         if it.get("estate") == "INVESTMENT":
+            if not expand_investments:
+                continue
             for rel in it.get("relatedAds") or []:
                 if isinstance(rel, dict):
                     yield rel, True
@@ -303,7 +393,11 @@ def _iter_units(items: Iterable[dict]) -> Iterable[Tuple[dict, bool]]:
 # API
 # --------------------------------------------------------------------------- #
 
-def scrape(config: dict) -> List[Listing]:
+def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
+    if deal not in DEALS:
+        raise ValueError("otodom: nieobsługiwany typ ogłoszenia %r (obsługiwane: %s)" % (deal, DEALS))
+    url = SEARCH_URLS[deal]
+    streams = _streams(deal)
     max_pages = int(config.get("max_pages") or 1)
     # Otodom blokuje częste zapytania (CAPTCHA AWS WAF), więc pobieramy tylko
     # najnowsze strony; starsze oferty trzyma aggregator (partial_sources).
@@ -315,19 +409,19 @@ def scrape(config: dict) -> List[Listing]:
     t0 = time.time()
     deadline = t0 + MAX_RUNTIME_S
 
-    market_label = dict(MARKETS)
+    market_label = dict(streams)
     # kolejka stron per rynek; po pobraniu strony 1 dopisujemy resztę wg _page_order
-    queue: Dict[str, List[int]] = {m: [1] for m, _ in MARKETS}
-    total_pages: Dict[str, Optional[int]] = {m: None for m, _ in MARKETS}
-    done_pages: Dict[str, int] = {m: 0 for m, _ in MARKETS}
-    fail_streak: Dict[str, int] = {m: 0 for m, _ in MARKETS}
+    queue: Dict[str, List[int]] = {m: [1] for m, _ in streams}
+    total_pages: Dict[str, Optional[int]] = {m: None for m, _ in streams}
+    done_pages: Dict[str, int] = {m: 0 for m, _ in streams}
+    fail_streak: Dict[str, int] = {m: 0 for m, _ in streams}
     stats: Dict[str, Any] = {"requests": 0, "blocked": 0, "slowdown": 1.0}
     pages_tried = 0
     first_errors: List[str] = []
     stop_reason: Optional[str] = None
 
     while not stop_reason and pages_tried < max_pages and any(queue.values()):
-        for market, _label in MARKETS:
+        for market, _label in streams:
             if not queue[market] or pages_tried >= max_pages:
                 continue
             if time.time() > deadline:
@@ -342,7 +436,7 @@ def scrape(config: dict) -> List[Listing]:
             pages_tried += 1
             params = _build_params(config, market, page)
             try:
-                items, pagination = _fetch_with_backoff(session, params, stats, deadline)
+                items, pagination = _fetch_with_backoff(session, params, stats, deadline, url)
             except BlockedError as e:
                 log.warning("otodom %s strona %d: blokada nie minęła: %s",
                             market, page, str(e)[:160])
@@ -375,9 +469,9 @@ def scrape(config: dict) -> List[Listing]:
             done_pages[market] += 1
 
             added = 0
-            for raw, is_related in _iter_units(items):
+            for raw, is_related in _iter_units(items, expand_investments=(deal == "sprzedaz")):
                 try:
-                    listing = _parse_item(raw, market_label[market])
+                    listing = _parse_item(raw, market_label[market], deal)
                 except Exception as e:  # noqa: BLE001
                     log.warning("otodom: pominięto błędną ofertę id=%s: %s",
                                 raw.get("id") if isinstance(raw, dict) else "?", e)
@@ -391,24 +485,24 @@ def scrape(config: dict) -> List[Listing]:
                 seen.add(listing.id)
                 results.append(listing)
                 added += 1
-            log.info("otodom %s strona %d/%s: %d pozycji, %d nowych ofert",
-                     market, page, total_pages[market], len(items), added)
+            log.info("otodom %s %s strona %d/%s: %d pozycji, %d nowych ofert",
+                     deal, market, page, total_pages[market], len(items), added)
 
     if not any(done_pages.values()):
         raise OtodomError(
-            "Otodom: nie udało się pobrać pierwszej strony wyników (%s)"
-            % "; ".join(first_errors or [stop_reason or "brak wyników"])
+            "Otodom (%s): nie udało się pobrać pierwszej strony wyników (%s)"
+            % (deal, "; ".join(first_errors or [stop_reason or "brak wyników"]))
         )
 
     missed = 0
-    for market, _ in MARKETS:
+    for market, _ in streams:
         tp = total_pages[market]
         if tp is not None:
             missed += max(0, tp - done_pages[market])
     elapsed = time.time() - t0
-    summary = "%d ofert, %d żądań, %d blokad (HTTP 405), %.0fs; pobrano %s" % (
-        len(results), stats["requests"], stats["blocked"], elapsed,
-        ", ".join("%s %d/%s" % (m, done_pages[m], total_pages[m]) for m, _ in MARKETS))
+    summary = "%s: %d ofert, %d żądań, %d blokad (HTTP 405), %.0fs; pobrano %s" % (
+        deal, len(results), stats["requests"], stats["blocked"], elapsed,
+        ", ".join("%s %d/%s" % (m, done_pages[m], total_pages[m]) for m, _ in streams))
     if missed:
         log.warning("otodom: przebieg NIEPEŁNY — pominięto %d stron (%s); %s",
                     missed, stop_reason or "limit max_pages / błędy stron", summary)
@@ -419,13 +513,19 @@ def scrape(config: dict) -> List[Listing]:
 
 if __name__ == "__main__":
     import os
+    import sys
     import yaml
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     with open(os.path.join(root, "config.yaml"), encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    # użycie: python -m scraper.sources.otodom [sprzedaz|wynajem|pokoj]
+    deal = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
+    if "deals" in cfg:
+        cfg["prefilter"] = ((cfg["deals"].get(deal) or {}).get("prefilter")
+                            or cfg.get("prefilter") or {})
     cfg["max_pages"] = 2
-    out = scrape(cfg)
-    print("count:", len(out))
+    out = scrape(cfg, deal)
+    print("count:", len(out), deal)
     print(json.dumps([l.to_dict() for l in out[:3]], ensure_ascii=False, indent=2))

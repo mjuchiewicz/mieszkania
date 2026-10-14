@@ -1,12 +1,20 @@
-"""Scraper OLX — mieszkania na sprzedaż we Wrocławiu.
+"""Scraper OLX — mieszkania na sprzedaż, na wynajem i pokoje we Wrocławiu.
 
 Korzysta z publicznego JSON API frontendu OLX:
     https://www.olx.pl/api/v1/offers/
-category_id=14  -> Nieruchomości / Mieszkania / Sprzedaż
+category_id=14  -> Nieruchomości / Mieszkania / Sprzedaż    (deal "sprzedaz")
+category_id=15  -> Nieruchomości / Mieszkania / Wynajem     (deal "wynajem")
+category_id=11  -> Nieruchomości / Stancje i pokoje         (deal "pokoj")
 region_id=3     -> Dolnośląskie
 city_id=19701   -> Wrocław
-(wartości potwierdzone w window.__PRERENDERED_STATE__ strony
- https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/wroclaw/)
+(wartości potwierdzone w window.__PRERENDERED_STATE__ stron
+ https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/wroclaw/,
+ .../mieszkania/wynajem/wroclaw/ i .../stancje-pokoje/wroclaw/)
+
+Wynajem: price = czynsz najmu zł/mies., parametr "rent" ("Czynsz (dodatkowo)")
+-> rent_extra. Kaucji ani daty dostępności OLX nie ma w parametrach — wyciągamy
+je ostrożnie z opisu (gdy się nie da, zostają None). Pokoje nie mają metrażu
+ani liczby pokoi.
 
 API ogranicza offset do 0..1000 (max ~1040 ofert na zapytanie), więc zakres
 cen dzielimy adaptacyjnie na pasma mieszczące się w tym limicie. Oferty zmirrorowane z otodom (external_url / partner otodom_pl)
@@ -17,6 +25,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from datetime import date
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from scraper.http import make_session, polite_sleep
@@ -26,25 +35,45 @@ log = logging.getLogger(__name__)
 
 SOURCE = "olx"
 API_URL = "https://www.olx.pl/api/v1/offers/"
-CATEGORY_ID = 14      # mieszkania / sprzedaż
+DEALS = ("sprzedaz", "wynajem", "pokoj")
+CATEGORY_IDS = {"sprzedaz": 14, "wynajem": 15, "pokoj": 11}
+REFERERS = {
+    "sprzedaz": "https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/wroclaw/",
+    "wynajem": "https://www.olx.pl/nieruchomosci/mieszkania/wynajem/wroclaw/",
+    "pokoj": "https://www.olx.pl/nieruchomosci/stancje-pokoje/wroclaw/",
+}
+CATEGORY_ID = CATEGORY_IDS["sprzedaz"]  # zgodność wsteczna
 REGION_ID = 3         # dolnośląskie
 CITY_ID = 19701       # Wrocław
 PAGE_SIZE = 40
 MAX_OFFSET = 1000     # limit walidacji API
 BAND_TARGET = 950     # pasmo cenowe z większą liczbą ofert dzielimy na pół
-MIN_BAND_WIDTH = 2000  # zł — węższych pasm już nie dzielimy
-DEFAULT_PRICE_MAX = 20_000_000
+MIN_BAND_WIDTH = {"sprzedaz": 2000, "wynajem": 20, "pokoj": 20}  # zł — węższych pasm nie dzielimy
+DEFAULT_PRICE_MAX = {"sprzedaz": 20_000_000, "wynajem": 100_000, "pokoj": 20_000}
 MAX_REQUESTS = 90     # globalny limit zapytań na przebieg (~3 min z polite_sleep)
 
 ROOMS_MAP = {"one": 1, "two": 2, "three": 3, "four": 4}
 
+# params (wartości z definicji filtrów OLX, kat. 14/15/11):
+#  floor_select: floor_-1 Suterena, floor_0 Parter, floor_1..floor_10,
+#                floor_11 "Powyżej 10", floor_17 Poddasze (-> floor_num None)
+#  furniture: yes/no;  builttype: blok/kamienica/wolnostojacy/szeregowiec/
+#  apartamentowiec/loft/pozostale;  (tylko wynajem) winda: Tak/Nie,
+#  pets: Tak/Nie, parking: [brak | przynależne na ulicy | parking strzeżony |
+#  w garażu | identyfikator]. Liczby pięter budynku ani stanu OLX nie podaje.
+BUILDING_TYPE_MAP = {
+    "blok": "blok", "kamienica": "kamienica", "apartamentowiec": "apartamentowiec",
+    "wolnostojacy": "dom", "szeregowiec": "szeregowiec", "loft": "loft",
+}
+FURNITURE_MAP = {"yes": True, "no": False}
+
 
 def _build_params(config: dict, offset: int, price_from: Optional[int] = None,
-                  price_to: Optional[int] = None) -> Dict[str, Any]:
+                  price_to: Optional[int] = None, deal: str = "sprzedaz") -> Dict[str, Any]:
     params: Dict[str, Any] = {
         "offset": offset,
         "limit": PAGE_SIZE,
-        "category_id": CATEGORY_ID,
+        "category_id": CATEGORY_IDS[deal],
         "region_id": REGION_ID,
         "city_id": CITY_ID,
         "sort_by": "created_at:desc",
@@ -54,7 +83,7 @@ def _build_params(config: dict, offset: int, price_from: Optional[int] = None,
         params["filter_float_price:from"] = int(price_from)
     if price_to is not None:
         params["filter_float_price:to"] = int(price_to)
-    if pre.get("area_min"):
+    if pre.get("area_min") and deal != "pokoj":  # pokoje nie mają parametru metrażu
         params["filter_float_m:from"] = pre["area_min"]
     return params
 
@@ -74,19 +103,101 @@ def _to_float(v: Any) -> Optional[float]:
         return None
 
 
-def _clean_description(text: Optional[str]) -> Optional[str]:
+def _clean_description_full(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
     t = re.sub(r"<br\s*/?>", " ", text, flags=re.I)
     t = re.sub(r"<[^>]+>", " ", t)
     t = html.unescape(t)
-    t = re.sub(r"\s+", " ", t).strip()
+    return re.sub(r"\s+", " ", t).strip() or None
+
+
+def _clean_description(text: Optional[str]) -> Optional[str]:
+    t = _clean_description_full(text)
+    if not t:
+        return None
     if len(t) > 500:
         t = t[:497].rstrip() + "..."
     return t or None
 
 
-def _parse_item(item: dict) -> Listing:
+def _int_from(v: Any) -> Optional[int]:
+    """'1 500', '600 zł', '2.400' -> int."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return int(round(v))
+    digits = re.sub(r"[^\d]", "", str(v).split(",")[0])
+    return int(digits) if digits else None
+
+
+_DEPOSIT_RE = re.compile(
+    r"kaucj\w*([^0-9.\n]{0,35}?)(\d{1,3}(?:[ .\u00a0]\d{3})+(?!\d)|\d+)(\s*[-–]?\s*\w{0,6})",
+    re.I)
+_MONTHS = {
+    "stycz": 1, "lut": 2, "mar": 3, "kwie": 4, "maj": 5, "czerw": 6, "lip": 7,
+    "sierp": 8, "wrze": 9, "paźdz": 10, "listop": 11, "grud": 12,
+}
+_AVAIL_RE = re.compile(
+    r"(?:dost\u0119pn\w*|woln\w*)(?:\s+jest)?\s*:?\s*od\s*(?:dnia\s*)?:?\s*"
+    r"(?:(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?!\d)"
+    r"|(\d{1,2})?\s*([a-z\u0105\u0107\u0119\u0142\u0144\u00f3\u015b\u017a\u017c]{3,})(?:\s+(\d{4}))?)",
+    re.I)
+
+
+def _deposit_from_text(text: Optional[str]) -> Optional[int]:
+    """'Kaucja: 2 900 zł', 'kaucja zwrotna 3000,-zł', 'Kaucja w wysokości 2050 zł' -> kwota.
+    Odrzuca '2-miesięczna', 'x2' itp. oraz kwoty spoza 100..50000."""
+    if not text:
+        return None
+    for m in _DEPOSIT_RE.finditer(text):
+        between, num, after = m.group(1), m.group(2), m.group(3).lower()
+        if re.search(r"(?i)x|razy|krot|czynsz|op\u0142at", between):
+            continue
+        if re.match(r"\s*[-–]?\s*(mies|msc|m-c|krot|x)", after):
+            continue
+        val = int(re.sub(r"\D", "", num))
+        if 100 <= val <= 50000:
+            return val
+    return None
+
+
+def _available_from_text(text: Optional[str], ref: Optional[date] = None) -> Optional[str]:
+    """'Dostępne od 01.11.2026', 'wolne od 1 grudnia 2026', 'dostępne od listopada'
+    -> ISO date. 'od zaraz' / brak daty -> None."""
+    if not text:
+        return None
+    ref = ref or date.today()
+    for m in _AVAIL_RE.finditer(text):
+        d_num, m_num, y_num, d_word, month_word, y_word = m.groups()
+        try:
+            if m_num:
+                day, month, year = int(d_num), int(m_num), y_num
+            else:
+                word = month_word.lower()
+                month = next((v for k, v in _MONTHS.items() if word.startswith(k)), None)
+                if month is None:
+                    continue  # np. "od zaraz"
+                day, year = int(d_word or 1), y_word
+            if year:
+                year = int(year)
+                if year < 100:
+                    year += 2000
+            else:
+                year = ref.year if month >= ref.month - 2 else ref.year + 1
+            return date(year, month, day).isoformat()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
+def _is_yes(v: Any) -> bool:
+    if isinstance(v, list):
+        return any(_is_yes(x) for x in v)
+    return isinstance(v, str) and v.strip().lower() in ("tak", "yes")
+
+
+def _parse_item(item: dict, deal: str = "sprzedaz") -> Listing:
     params = {p.get("key"): p for p in item.get("params") or [] if isinstance(p, dict)}
 
     def pval(key: str) -> dict:
@@ -109,6 +220,29 @@ def _parse_item(item: dict) -> Listing:
     elif flabel:
         floor = str(flabel)
 
+    floor_num = None
+    fm = re.fullmatch(r"floor_(-?\d+)", fk)
+    if fm and fk != "floor_17":  # floor_17 = poddasze (piętro nieznane)
+        floor_num = int(fm.group(1))
+
+    furnished = FURNITURE_MAP.get(pval("furniture").get("key"))
+    building_type = BUILDING_TYPE_MAP.get(pval("builttype").get("key"))
+
+    features: List[str] = []
+    if _is_yes(pval("winda").get("key")):
+        features.append("winda")
+    if _is_yes(pval("pets").get("key")):
+        features.append("zwierzeta")
+    parking = pval("parking").get("key")
+    parking = [parking] if isinstance(parking, str) else (parking or [])
+    for pk in parking:
+        pk = str(pk).lower()
+        if "garaż" in pk or "garaz" in pk:
+            features.append("garaz")
+        elif "ulicy" in pk or "strzeżony" in pk or "strzezony" in pk:
+            features.append("parking")
+    features = sorted(set(features))
+
     market = {"primary": "pierwotny", "secondary": "wtorny"}.get(pval("market").get("key"))
 
     if item.get("business"):
@@ -129,11 +263,19 @@ def _parse_item(item: dict) -> Listing:
     lat = _to_float(m.get("lat"))
     lon = _to_float(m.get("lon"))
 
+    rent_extra = deposit = available_from = None
+    if deal != "sprzedaz":
+        rent_extra = _int_from(pval("rent").get("key"))
+        desc_text = _clean_description_full(item.get("description"))
+        deposit = _deposit_from_text(desc_text)
+        available_from = _available_from_text(desc_text)
+
     return Listing(
         source=SOURCE,
         id=str(item["id"]),
         url=item["url"],
         title=(item.get("title") or "").strip(),
+        deal=deal,
         price=price,
         area=area,
         rooms=rooms,
@@ -146,24 +288,35 @@ def _parse_item(item: dict) -> Listing:
         lat=lat,
         lon=lon,
         created_at=item.get("created_time"),
+        rent_extra=rent_extra,
+        deposit=deposit,
+        available_from=available_from,
+        floor_num=floor_num,
+        furnished=furnished,
+        building_type=building_type,
+        features=features,
     )
 
 
-def _price_range(config: dict) -> Tuple[int, int]:
+def _price_range(config: dict, deal: str = "sprzedaz") -> Tuple[int, int]:
     pre = config.get("prefilter") or {}
     lo = int(pre.get("price_min") or 0)
-    hi = int(pre.get("price_max") or DEFAULT_PRICE_MAX)
+    hi = int(pre.get("price_max") or DEFAULT_PRICE_MAX[deal])
     return lo, hi
 
 
-def scrape(config: dict) -> List[Listing]:
-    """Pobiera oferty, dzieląc zakres cen na pasma tak, by każde mieściło się
-    w limicie offsetu API (adaptacyjnie: pasmo z > BAND_TARGET ofert dzielone na pół)."""
+def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
+    """Pobiera oferty danego typu (deal), dzieląc zakres cen na pasma tak, by każde
+    mieściło się w limicie offsetu API (adaptacyjnie: pasmo z > BAND_TARGET ofert
+    dzielone na pół)."""
+    if deal not in DEALS:
+        raise ValueError("olx: nieobsługiwany typ ogłoszenia %r (obsługiwane: %s)" % (deal, DEALS))
     session = make_session()
     session.headers.update({
         "Accept": "application/json, text/plain, */*",
-        "Referer": "https://www.olx.pl/nieruchomosci/mieszkania/sprzedaz/wroclaw/",
+        "Referer": REFERERS[deal],
     })
+    min_band = MIN_BAND_WIDTH[deal]
     max_pages = int(config.get("max_pages") or 1)   # limit stron na pasmo
 
     results: List[Listing] = []
@@ -174,7 +327,7 @@ def scrape(config: dict) -> List[Listing]:
         if stats["requests"] > 0:
             polite_sleep()
         stats["requests"] += 1
-        resp = session.get(API_URL, params=_build_params(config, offset, lo, hi), timeout=30)
+        resp = session.get(API_URL, params=_build_params(config, offset, lo, hi, deal), timeout=30)
         resp.raise_for_status()
         data = resp.json()
         if not isinstance(data.get("data"), list):
@@ -190,7 +343,7 @@ def scrape(config: dict) -> List[Listing]:
                 city = ((item.get("location") or {}).get("city") or {}).get("id")
                 if city is not None and city != CITY_ID:
                     continue
-                listing = _parse_item(item)
+                listing = _parse_item(item, deal)
                 if listing.id in seen:
                     continue
                 seen.add(listing.id)
@@ -199,7 +352,7 @@ def scrape(config: dict) -> List[Listing]:
                 log.warning("olx: pominięto ofertę %s: %s",
                             item.get("id") if isinstance(item, dict) else "?", e)
 
-    lo0, hi0 = _price_range(config)
+    lo0, hi0 = _price_range(config, deal)
     bands: List[Tuple[int, int]] = [(lo0, hi0)]
     first = True
 
@@ -214,14 +367,14 @@ def scrape(config: dict) -> List[Listing]:
         except Exception as e:
             if first:
                 raise RuntimeError(
-                    f"olx: nie udało się pobrać pierwszej strony API ({API_URL}): {e}") from e
+                    f"olx {deal}: nie udało się pobrać pierwszej strony API ({API_URL}): {e}") from e
             log.warning("olx: błąd pasma %d-%d: %s — pomijam", lo, hi, e)
             continue
         first = False
 
         meta = data.get("metadata") or {}
         total = int(meta.get("visible_total_count") or meta.get("total_elements") or 0)
-        if total > BAND_TARGET and hi - lo > MIN_BAND_WIDTH:
+        if total > BAND_TARGET and hi - lo > min_band:
             mid = (lo + hi) // 2
             log.info("olx: pasmo %d-%d ma %d ofert — dzielę", lo, hi, total)
             consume(data["data"])  # ta strona i tak już pobrana
@@ -249,8 +402,8 @@ def scrape(config: dict) -> List[Listing]:
             if not (data.get("links") or {}).get("next"):
                 break
 
-    log.info("olx: %d ofert (pominięto %d mirrorów otodom, %d zapytań)",
-             len(results), stats["otodom"], stats["requests"])
+    log.info("olx %s: %d ofert (pominięto %d mirrorów otodom, %d zapytań)",
+             deal, len(results), stats["otodom"], stats["requests"])
     return results
 
 
@@ -265,9 +418,15 @@ if __name__ == "__main__":
     cfg_path = Path(__file__).resolve().parents[2] / "config.yaml"
     with open(cfg_path, encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    # użycie: python -m scraper.sources.olx [sprzedaz|wynajem|pokoj] [--full]
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    deal = args[0] if args else "sprzedaz"
+    if "prefilter" not in cfg or "deals" in cfg:
+        cfg["prefilter"] = (((cfg.get("deals") or {}).get(deal) or {}).get("prefilter")
+                            or cfg.get("prefilter") or {})
     if "--full" not in sys.argv:  # --full: pełny przebieg z max_pages z configu
         cfg["max_pages"] = 2
-    listings = scrape(cfg)
-    print(f"Pobrano {len(listings)} ofert")
+    listings = scrape(cfg, deal)
+    print(f"Pobrano {len(listings)} ofert ({deal})")
     for l in listings[:3]:
         print(json.dumps(l.to_dict(), ensure_ascii=False, indent=2))

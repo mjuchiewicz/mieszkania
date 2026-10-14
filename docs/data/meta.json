@@ -1,51 +1,172 @@
 {
-  "last_run": "2026-10-13T22:56:13Z",
+  "last_run": "2026-10-14T10:18:10Z",
   "first_run": "2026-10-13T21:21:33Z",
-  "finished": "2026-10-14T01:01:44Z",
-  "total": 15334,
-  "active": 15238,
-  "dup_groups": 3051,
+  "finished": "2026-10-14T10:48:39Z",
   "drop_after_days": 14,
-  "sources": {
-    "domiporta": {
-      "count": 2665,
-      "duration_s": 164.3,
-      "last_run": "2026-10-14T01:01:42Z",
-      "status": "ok",
-      "error": null,
-      "last_ok": "2026-10-14T01:01:42Z"
+  "enabled_deals": [
+    "sprzedaz",
+    "wynajem",
+    "pokoj"
+  ],
+  "deals": {
+    "sprzedaz": {
+      "label": "Kupno",
+      "file": "sprzedaz.json",
+      "first_run": "2026-10-13T21:21:33Z",
+      "last_run": "2026-10-14T10:18:10Z",
+      "total": 15470,
+      "active": 15226,
+      "dup_groups": 3076,
+      "sources": {
+        "domiporta": {
+          "count": 2651,
+          "duration_s": 1309.5,
+          "last_run": "2026-10-14T10:40:00Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:40:00Z",
+          "first_ok": "2026-10-13T21:21:33Z"
+        },
+        "gratka": {
+          "count": 6510,
+          "duration_s": 1728.8,
+          "last_run": "2026-10-14T10:46:59Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:46:59Z",
+          "first_ok": "2026-10-13T21:21:33Z"
+        },
+        "nieruchomosci_online": {
+          "count": 4729,
+          "duration_s": 1471.5,
+          "last_run": "2026-10-14T10:42:42Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:42:42Z",
+          "first_ok": "2026-10-13T21:21:33Z"
+        },
+        "olx": {
+          "count": 196,
+          "duration_s": 1230.8,
+          "last_run": "2026-10-14T10:38:41Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:38:41Z",
+          "first_ok": "2026-10-13T21:21:33Z"
+        },
+        "otodom": {
+          "count": 504,
+          "duration_s": 993.5,
+          "last_run": "2026-10-14T10:34:44Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:34:44Z",
+          "first_ok": "2026-10-13T21:21:33Z"
+        }
+      }
     },
-    "gratka": {
-      "count": 6547,
-      "duration_s": 7529.1,
-      "last_run": "2026-10-14T01:01:42Z",
-      "status": "ok",
-      "error": null,
-      "last_ok": "2026-10-14T01:01:42Z"
+    "wynajem": {
+      "label": "Wynajem",
+      "file": "wynajem.json",
+      "first_run": "2026-10-14T09:56:12Z",
+      "last_run": "2026-10-14T10:18:10Z",
+      "total": 5052,
+      "active": 5042,
+      "dup_groups": 758,
+      "sources": {
+        "domiporta": {
+          "count": 567,
+          "duration_s": 32.1,
+          "last_run": "2026-10-14T10:40:35Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:40:35Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        },
+        "gratka": {
+          "count": 1002,
+          "duration_s": 87.4,
+          "last_run": "2026-10-14T10:48:30Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:48:30Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        },
+        "nieruchomosci_online": {
+          "count": 1294,
+          "duration_s": 84.3,
+          "last_run": "2026-10-14T10:44:09Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:44:09Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        },
+        "olx": {
+          "count": 1613,
+          "duration_s": 159.8,
+          "last_run": "2026-10-14T10:41:24Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:41:24Z",
+          "first_ok": "2026-10-14T09:56:12Z"
+        },
+        "otodom": {
+          "count": 566,
+          "duration_s": 252.2,
+          "last_run": "2026-10-14T10:38:59Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:38:59Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        }
+      }
     },
-    "nieruchomosci_online": {
-      "count": 4745,
-      "duration_s": 2364.3,
-      "last_run": "2026-10-14T01:01:42Z",
-      "status": "ok",
-      "error": null,
-      "last_ok": "2026-10-14T01:01:42Z"
-    },
-    "olx": {
-      "count": 196,
-      "duration_s": 128.3,
-      "last_run": "2026-10-14T01:01:42Z",
-      "status": "ok",
-      "error": null,
-      "last_ok": "2026-10-14T01:01:42Z"
-    },
-    "otodom": {
-      "count": 360,
-      "duration_s": 1333.8,
-      "last_run": "2026-10-14T01:01:42Z",
-      "status": "ok",
-      "error": null,
-      "last_ok": "2026-10-14T01:01:42Z"
+    "pokoj": {
+      "label": "Pokoje",
+      "file": "pokoj.json",
+      "first_run": "2026-10-14T09:56:12Z",
+      "last_run": "2026-10-14T10:18:10Z",
+      "total": 1055,
+      "active": 1049,
+      "dup_groups": 13,
+      "sources": {
+        "gratka": {
+          "count": 39,
+          "duration_s": 3.5,
+          "last_run": "2026-10-14T10:48:36Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:48:36Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        },
+        "nieruchomosci_online": {
+          "count": 50,
+          "duration_s": 5.8,
+          "last_run": "2026-10-14T10:44:18Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:44:18Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        },
+        "olx": {
+          "count": 766,
+          "duration_s": 40.9,
+          "last_run": "2026-10-14T10:42:08Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:42:08Z",
+          "first_ok": "2026-10-14T09:56:12Z"
+        },
+        "otodom": {
+          "count": 194,
+          "duration_s": 10.3,
+          "last_run": "2026-10-14T10:39:13Z",
+          "status": "ok",
+          "error": null,
+          "last_ok": "2026-10-14T10:39:13Z",
+          "first_ok": "2026-10-14T10:18:10Z"
+        }
+      }
     }
   }
 }

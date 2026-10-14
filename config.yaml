@@ -3,12 +3,27 @@
 
 city: wroclaw
 
-# Wstępny filtr pobierania (zostaw puste = bez limitu).
-# Szerokie widełki = więcej ofert na stronie do przefiltrowania.
-prefilter:
-  price_max: 1500000     # zł
-  price_min: 200000      # zł
-  area_min: 20           # m2
+# Typy ogłoszeń i wstępny filtr pobierania dla każdego z nich
+# (zostaw puste = bez limitu). Szerokie widełki = więcej ofert na stronie.
+# Ceny: sprzedaż = cena całkowita, wynajem/pokój = czynsz zł/mies.
+deals:
+  sprzedaz:              # kupno mieszkania
+    enabled: true
+    prefilter:
+      price_min: 200000
+      price_max: 1500000
+      area_min: 20
+  wynajem:               # wynajem mieszkania
+    enabled: true
+    prefilter:
+      price_min: 1000
+      price_max: 8000
+      area_min: 15
+  pokoj:                 # wynajem pokoju
+    enabled: true
+    prefilter:
+      price_min: 300
+      price_max: 3000
 
 # Które portale włączone (true/false)
 sources:
@@ -27,10 +42,14 @@ max_pages: 300
 drop_after_days: 14
 
 # Otodom blokuje częste pobieranie, więc co przebieg bierzemy tylko
-# najnowsze strony (obu rynków razem)...
-otodom_max_pages: 12
+# najnowsze strony (osobno dla kupna, wynajmu i pokoi)...
+otodom_max_pages: 8
 
 # ...a jego oferty, których nie widzieliśmy, trzymamy na liście tyle dni
 # od ostatniego zobaczenia (bo mogły być po prostu na dalszej stronie).
 partial_sources:
   otodom: 30
+
+# Gratka: przy kupnie pobieraj też szczegóły (piętro, stan, balkon, winda...).
+# Daje dużo lepsze filtry, ale wydłuża przebieg o ok. 8 minut.
+gratka_details: true

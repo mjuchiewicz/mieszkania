@@ -13,6 +13,10 @@ on:
         description: "Tylko wybrane portale, po przecinku (puste = wszystkie włączone)"
         required: false
         default: ""
+      deals:
+        description: "Tylko wybrane typy: sprzedaz, wynajem, pokoj — po przecinku (puste = wszystkie włączone)"
+        required: false
+        default: ""
 
 permissions:
   contents: write
@@ -24,7 +28,7 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60   # jeden przebieg pobiera kupno, wynajem i pokoje
     steps:
       - uses: actions/checkout@v4
 
@@ -40,10 +44,12 @@ jobs:
         env:
           MAX_PAGES: ${{ github.event.inputs.max_pages }}
           SOURCES: ${{ github.event.inputs.sources }}
+          DEALS: ${{ github.event.inputs.deals }}
         run: |
           ARGS=""
           if [ -n "$MAX_PAGES" ]; then ARGS="$ARGS --max-pages $MAX_PAGES"; fi
           if [ -n "$SOURCES" ]; then ARGS="$ARGS --sources $SOURCES"; fi
+          if [ -n "$DEALS" ]; then ARGS="$ARGS --deals $DEALS"; fi
           python -m scraper.main $ARGS
 
       - name: Zapis zmian w repozytorium

@@ -1,10 +1,15 @@
-"""Scraper domiporta.pl — mieszkania na sprzedaż we Wrocławiu.
+"""Scraper domiporta.pl — mieszkania na sprzedaż i na wynajem we Wrocławiu.
 
 Strona wyników jest renderowana po stronie serwera. Każda strona zawiera
 JSON-LD (ItemList z RealEstateListing: cena, metraż, pokoje, ulica, data,
 sprzedawca, zdjęcie) oraz kafelki HTML (`article.sneakpeak`), z których bierzemy
 lokalizację (dzielnica/osiedle). Rynek ustalamy, robiąc dwa przebiegi:
 Rynek=Wtorny i Rynek=Pierwotny (każdy do `max_pages` stron).
+
+Wynajem (/mieszkanie/wynajme/...): jeden przebieg bez podziału na rynki; cena to
+czynsz najmu zł/mies., a czynsz administracyjny bierzemy z kafelka ("+ czynsz: X zł").
+Kaucji ani daty dostępności lista nie podaje. Pokoi (/pokoj/wynajme/...) domiporta
+dla Wrocławia nie ma ("Brak wyników"), więc "pokoj" nie jest obsługiwany.
 """
 from __future__ import annotations
 
@@ -23,19 +28,22 @@ log = logging.getLogger(__name__)
 SOURCE = "domiporta"
 BASE = "https://www.domiporta.pl"
 SEARCH_URL = BASE + "/mieszkanie/sprzedam/dolnoslaskie/wroclaw"
+RENT_URL = BASE + "/mieszkanie/wynajme/dolnoslaskie/wroclaw"
+DEALS = ("sprzedaz", "wynajem")
 MARKETS = (("Wtorny", "wtorny"), ("Pierwotny", "pierwotny"))
 # Heurystyka: nazwa firmy wskazuje na dewelopera (a nie biuro nieruchomości).
 _DEV_RE = re.compile(r"develop|deweloper|budownictw|budowlan|inwestycj|invest|robyg|archicom|"
                      r"murapol|atal\b|vantage|ronson|lokum|\bsp\. ?z o\.? ?o|\bs\.a\.")
 
 
-def _params(config: dict, rynek: str, page: int) -> Dict[str, str]:
+def _params(config: dict, rynek: Optional[str], page: int) -> Dict[str, str]:
     pre = config.get("prefilter") or {}
     p: Dict[str, str] = {
-        "Rynek": rynek,
         "SortingOrderDirection": "InsertionDateDescending",
         "GroupToInvestments": "False",
     }
+    if rynek:
+        p["Rynek"] = rynek
     if pre.get("price_min"):
         p["Price.From"] = str(int(pre["price_min"]))
     if pre.get("price_max"):
@@ -100,12 +108,28 @@ def _tile_locations(soup: BeautifulSoup) -> Dict[str, List[str]]:
     return out
 
 
+def _tile_fees(soup: BeautifulSoup) -> Dict[str, int]:
+    """Mapuje ścieżkę URL ogłoszenia -> czynsz administracyjny ("+ czynsz: 1 500 zł")."""
+    out: Dict[str, int] = {}
+    for art in soup.select("article.sneakpeak"):
+        a = art.select_one("a.sneakpeak__title[href]")
+        fee = art.select_one(".sneakpeak__price_fee")
+        if not a or not fee:
+            continue
+        m = re.search(r"czynsz:\s*([\d\s\xa0]+)", fee.get_text(" ", strip=True))
+        v = _num(re.sub(r"\D", "", m.group(1))) if m else None
+        if v:
+            out[a["href"].split("?")[0].replace(BASE, "")] = int(v)
+    return out
+
+
 def _district(parts: List[str], street: Optional[str]) -> Optional[str]:
     cands = [p for p in parts if not street or p.lower() != street.lower()]
     return cands[0] if cands else None
 
 
-def _parse_item(item: dict, locs: Dict[str, List[str]], market: str) -> Optional[Listing]:
+def _parse_item(item: dict, locs: Dict[str, List[str]], market: Optional[str],
+                deal: str = "sprzedaz", fees: Optional[Dict[str, int]] = None) -> Optional[Listing]:
     url = item.get("url") or ""
     lid = _listing_id(url)
     if not lid:
@@ -138,7 +162,7 @@ def _parse_item(item: dict, locs: Dict[str, List[str]], market: str) -> Optional
         seller = "prywatny"
     elif seller_obj.get("@type") == "Organization":
         name = (seller_obj.get("name") or "").lower()
-        if "nieruchomo" not in name and _DEV_RE.search(name):
+        if deal == "sprzedaz" and "nieruchomo" not in name and _DEV_RE.search(name):
             seller = "deweloper"
         else:
             seller = "agencja"
@@ -158,6 +182,7 @@ def _parse_item(item: dict, locs: Dict[str, List[str]], market: str) -> Optional
         id=lid,
         url=url,
         title=title,
+        deal=deal,
         price=int(round(price)),
         area=area,
         rooms=rooms,
@@ -168,6 +193,7 @@ def _parse_item(item: dict, locs: Dict[str, List[str]], market: str) -> Optional
         images=images,
         description=desc,
         created_at=item.get("datePosted") or None,
+        rent_extra=(fees or {}).get(path) if deal != "sprzedaz" else None,
     )
 
 
@@ -177,8 +203,10 @@ def _last_page(soup: BeautifulSoup) -> Optional[int]:
     return max(nums) if nums else None
 
 
-def _scrape_market(session, config: dict, rynek: str, market: str,
-                   max_pages: int, seen: set) -> Tuple[List[Listing], bool]:
+def _scrape_market(session, config: dict, rynek: Optional[str], market: Optional[str],
+                   max_pages: int, seen: set, deal: str = "sprzedaz") -> Tuple[List[Listing], bool]:
+    search_url = SEARCH_URL if deal == "sprzedaz" else RENT_URL
+    label = rynek or deal
     results: List[Listing] = []
     first_ok = False
     last_page: Optional[int] = None
@@ -186,29 +214,30 @@ def _scrape_market(session, config: dict, rynek: str, market: str,
         if page > 1:
             polite_sleep()
         try:
-            resp = session.get(SEARCH_URL, params=_params(config, rynek, page), timeout=30)
+            resp = session.get(search_url, params=_params(config, rynek, page), timeout=30)
             resp.raise_for_status()
         except Exception as e:  # noqa: BLE001
             if page == 1:
-                raise RuntimeError(f"domiporta: nie udało się pobrać 1. strony ({rynek}): {e}") from e
-            log.warning("domiporta: błąd strony %d (%s): %s — przerywam", page, rynek, e)
+                raise RuntimeError(f"domiporta: nie udało się pobrać 1. strony ({label}): {e}") from e
+            log.warning("domiporta: błąd strony %d (%s): %s — przerywam", page, label, e)
             break
         soup = BeautifulSoup(resp.text, "lxml")
         items = _ld_items(soup)
         if page == 1:
             if not items and not soup.select("article.sneakpeak"):
                 raise RuntimeError(
-                    f"domiporta: brak ofert na 1. stronie ({rynek}) — zmiana struktury strony lub blokada? "
+                    f"domiporta: brak ofert na 1. stronie ({label}) — zmiana struktury strony lub blokada? "
                     f"URL: {resp.url}")
             first_ok = True
             last_page = _last_page(soup)
         if not items:
             break
         locs = _tile_locations(soup)
+        fees = _tile_fees(soup) if deal != "sprzedaz" else {}
         new = 0
         for it in items:
             try:
-                lst = _parse_item(it, locs, market)
+                lst = _parse_item(it, locs, market, deal, fees)
             except Exception as e:  # noqa: BLE001
                 log.warning("domiporta: błąd parsowania elementu: %s", e)
                 continue
@@ -217,16 +246,21 @@ def _scrape_market(session, config: dict, rynek: str, market: str,
             seen.add(lst.key)
             results.append(lst)
             new += 1
-        log.info("domiporta %s: strona %d — %d nowych", rynek, page, new)
+        log.info("domiporta %s: strona %d — %d nowych", label, page, new)
         if new == 0 or (last_page is not None and page >= last_page):
             break
     return results, first_ok
 
 
-def scrape(config: dict) -> List[Listing]:
+def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
+    if deal not in DEALS:
+        raise ValueError(f"domiporta: nieobsługiwany typ ogłoszenia {deal!r}")
     max_pages = int(config.get("max_pages") or 30)
     session = make_session()
     seen: set = set()
+    if deal != "sprzedaz":
+        res, _ = _scrape_market(session, config, None, None, max_pages, seen, deal)
+        return res
     out: List[Listing] = []
     for i, (rynek, market) in enumerate(MARKETS):
         if i > 0:
@@ -237,13 +271,19 @@ def scrape(config: dict) -> List[Listing]:
 
 
 if __name__ == "__main__":
+    import sys
+
     import yaml
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    deal_arg = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
     cfg["max_pages"] = 2
-    res = scrape(cfg)
+    deal_cfg = (cfg.get("deals") or {}).get(deal_arg) or {}
+    if "prefilter" in deal_cfg:
+        cfg["prefilter"] = deal_cfg.get("prefilter") or {}
+    res = scrape(cfg, deal_arg)
     print(f"{len(res)} ofert")
     for r in res[:3]:
         print(json.dumps(r.to_dict(), ensure_ascii=False, indent=2))

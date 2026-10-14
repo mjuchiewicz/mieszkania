@@ -1,8 +1,12 @@
 """Punkt wejścia: `python -m scraper.main`.
 
-Uruchamia wszystkie włączone scrapery, scala wyniki z poprzednim stanem
-(docs/data/listings.json), wykrywa duplikaty między portalami i zapisuje
-docs/data/meta.json ze statusem każdego portalu.
+Dla każdego włączonego typu ogłoszeń (kupno / wynajem / pokoje) uruchamia
+wszystkie włączone portale, które ten typ obsługują, scala wyniki z poprzednim
+stanem (docs/data/<typ>.json), wykrywa duplikaty między portalami i zapisuje
+docs/data/meta.json ze statusem każdego portalu dla każdego typu.
+
+Różne portale pobieramy równolegle, ale typy ogłoszeń jednego portalu po kolei
+(żeby nie zasypywać jednego serwera zapytaniami).
 """
 from __future__ import annotations
 
@@ -10,6 +14,7 @@ import argparse
 import copy
 import hashlib
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -26,17 +31,28 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
+from scraper.geo import GEO_EXACT, geocode_listings
+from scraper.models import DEALS
+
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.yaml"
 DATA_DIR = ROOT / "docs" / "data"
-LISTINGS_PATH = DATA_DIR / "listings.json"
+LEGACY_LISTINGS_PATH = DATA_DIR / "listings.json"   # stary format (tylko sprzedaż)
 META_PATH = DATA_DIR / "meta.json"
 
 MAX_IMAGES = 1  # strona pokazuje tylko miniaturę
-MAX_DESCRIPTION = 600
+MAX_DESCRIPTION = 400  # opis służy tylko do wyszukiwania po słowach
 MAX_PRICE_HISTORY = 50
+PAUSE_BETWEEN_DEALS = 3.0  # s przerwy między typami ogłoszeń na tym samym portalu
+
+DEAL_LABELS = {"sprzedaz": "Kupno", "wynajem": "Wynajem", "pokoj": "Pokoje"}
+RENT_DEALS = ("wynajem", "pokoj")
 
 log = logging.getLogger("scraper")
+
+
+def deal_path(deal: str) -> Path:
+    return DATA_DIR / ("%s.json" % deal)
 
 
 # ---------------------------------------------------------------- helpers
@@ -107,7 +123,25 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
     cfg.setdefault("sources", {})
     cfg.setdefault("max_pages", 30)
     cfg.setdefault("drop_after_days", 14)
-    cfg.setdefault("prefilter", {})
+    deals = cfg.get("deals")
+    if not isinstance(deals, dict) or not deals:
+        # stary config: jeden `prefilter` = tylko sprzedaż
+        deals = {"sprzedaz": {"enabled": True, "prefilter": cfg.get("prefilter") or {}}}
+    norm_deals = {}
+    for name in DEALS:
+        d = deals.get(name)
+        if d is None:
+            continue
+        if not isinstance(d, dict):
+            d = {"enabled": bool(d)}
+        norm_deals[name] = {
+            "enabled": bool(d.get("enabled", True)),
+            "prefilter": dict(d.get("prefilter") or {}),
+        }
+    for name in deals:
+        if name not in DEALS:
+            log.warning("Nieznany typ ogłoszeń w config.yaml: %r (dozwolone: %s)", name, ", ".join(DEALS))
+    cfg["deals"] = norm_deals
     return cfg
 
 
@@ -130,47 +164,91 @@ def norm_street(s: Optional[str]) -> str:
 
 # ---------------------------------------------------------------- scraping
 
-def run_source(name: str, config: dict) -> Tuple[List[dict], Optional[str]]:
+def load_module(name: str):
+    return importlib.import_module("scraper.sources.%s" % name)
+
+
+def module_deals(module) -> Tuple[str, ...]:
+    """Typy ogłoszeń obsługiwane przez moduł. Stare moduły (bez `deal`) = tylko sprzedaż."""
+    if not accepts_deal(module):
+        return ("sprzedaz",)
+    deals = getattr(module, "DEALS", ("sprzedaz",))
+    if isinstance(deals, str):
+        deals = (deals,)
+    return tuple(d for d in deals if d in DEALS)
+
+
+def accepts_deal(module) -> bool:
+    fn = getattr(module, "scrape", None)
+    if fn is None:
+        return False
+    try:
+        inspect.signature(fn).bind({}, "sprzedaz")
+        return True
+    except TypeError:
+        return False
+    except ValueError:  # brak sygnatury (np. funkcja w C) — zakładamy nowy kontrakt
+        return True
+
+
+def run_source(name: str, module, config: dict, deal: str) -> Tuple[List[dict], Optional[str]]:
     """Zwraca (lista ofert jako dict, komunikat błędu albo None)."""
     try:
-        module = importlib.import_module("scraper.sources.%s" % name)
-        listings = module.scrape(copy.deepcopy(config))
+        cfg = copy.deepcopy(config)
+        cfg["prefilter"] = dict(config["deals"][deal]["prefilter"])
+        cfg["deal"] = deal
+        if accepts_deal(module):
+            listings = module.scrape(cfg, deal)
+        else:
+            listings = module.scrape(cfg)  # stary kontrakt: tylko sprzedaż
         out = []
         for l in listings or []:
             try:
                 d = l.to_dict() if hasattr(l, "to_dict") else dict(l)
             except Exception as e:  # pragma: no cover - defensywnie
-                log.warning("[%s] pomijam błędną ofertę: %s", name, e)
+                log.warning("[%s/%s] pomijam błędną ofertę: %s", name, deal, e)
                 continue
             if not d.get("id") or not d.get("url"):
                 continue
+            d["id"] = str(d["id"])
             d["source"] = d.get("source") or name
             d["key"] = "%s:%s" % (d["source"], d["id"])
+            d["deal"] = deal
             out.append(d)
         return out, None
     except Exception as e:
-        log.error("[%s] BŁĄD: %s\n%s", name, e, traceback.format_exc())
+        log.error("[%s/%s] BŁĄD: %s\n%s", name, deal, e, traceback.format_exc())
         msg = "%s: %s" % (type(e).__name__, e)
         return [], msg[:500]
+
+
+def _to_int(v: Any) -> Optional[int]:
+    if v is None or v == "":
+        return None
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def trim_description(desc: Any) -> Optional[str]:
+    if not desc:
+        return None
+    desc = re.sub(r"\s+", " ", str(desc)).strip()
+    if len(desc) > MAX_DESCRIPTION:
+        desc = desc[:MAX_DESCRIPTION].rsplit(" ", 1)[0] + "…"
+    return desc or None
 
 
 def clean_listing(d: dict) -> dict:
     """Przycina pola, żeby plik JSON był lekki."""
     imgs = [i for i in (d.get("images") or []) if isinstance(i, str) and i.startswith("http")]
     d["images"] = imgs[:MAX_IMAGES]
-    desc = d.get("description")
-    if desc:
-        desc = re.sub(r"\s+", " ", str(desc)).strip()
-        if len(desc) > MAX_DESCRIPTION:
-            desc = desc[:MAX_DESCRIPTION].rsplit(" ", 1)[0] + "…"
-        d["description"] = desc
-    if d.get("price") is not None:
-        try:
-            d["price"] = int(round(float(d["price"])))
-        except (TypeError, ValueError):
-            d["price"] = None
-        if d["price"] is not None and d["price"] <= 0:
-            d["price"] = None
+    d["description"] = trim_description(d.get("description"))
+    for k in ("price", "rent_extra", "deposit"):
+        if k in d:
+            d[k] = _to_int(d.get(k))
     if d.get("area") is not None:
         try:
             d["area"] = round(float(d["area"]), 2)
@@ -178,10 +256,13 @@ def clean_listing(d: dict) -> dict:
             d["area"] = None
         if d["area"] is not None and d["area"] <= 0:
             d["area"] = None
-    if d.get("price") and d.get("area"):
-        d["price_per_m2"] = round(d["price"] / d["area"])
+    d.pop("price_per_m2", None)  # strona liczy sama
+    # współrzędne z portalu = dokładne; bez nich pole geo nie nadpisuje stanu
+    # (przybliżenia liczy geocode_listings po scaleniu)
+    if d.get("lat") is not None and d.get("lon") is not None:
+        d["geo"] = GEO_EXACT
     else:
-        d["price_per_m2"] = None
+        d.pop("geo", None)
     return d
 
 
@@ -199,7 +280,7 @@ def merge(
     drop_after_days: int,
     partial_sources: Optional[Dict[str, int]] = None,
 ) -> Dict[str, dict]:
-    """Scala nowe wyniki z poprzednim stanem.
+    """Scala nowe wyniki z poprzednim stanem (jednego typu ogłoszeń).
 
     ok_sources        – portale, które w tym przebiegu zadziałały poprawnie:
                         ich niewidziane oferty dostają active=False.
@@ -291,8 +372,12 @@ def _district_compatible(a: str, b: str) -> Optional[bool]:
     return a == b or a in b or b in a
 
 
-def pair_score(a: dict, b: dict) -> Optional[int]:
-    """Zwraca liczbę „mocnych” zgodności albo None, gdy oferty na pewno różne."""
+def pair_score(a: dict, b: dict, rent: bool = False) -> Optional[int]:
+    """Zwraca liczbę „mocnych” zgodności albo None, gdy oferty na pewno różne.
+
+    rent=True (wynajem/pokój): czynsze są okrągłe i często się powtarzają
+    (np. 2500 zł), więc równa cena waży mniej, a różne opłaty dodatkowe wykluczają.
+    """
     if a["source"] == b["source"]:
         return None
     pa, pb, aa, ab = a.get("price"), b.get("price"), a.get("area"), b.get("area")
@@ -313,14 +398,19 @@ def pair_score(a: dict, b: dict) -> Optional[int]:
         return None
     if a.get("market") and b.get("market") and a["market"] != b["market"]:
         return None
+    if rent:
+        ea, eb = a.get("rent_extra"), b.get("rent_extra")
+        if ea and eb and abs(ea - eb) > 0.05 * max(ea, eb):
+            return None
 
     # Każdy sygnał zgodności daje punkty; łączymy dopiero przy MIN_SCORE.
     score = 0
+    near = False
     if abs(aa - ab) <= 0.1:
         score += 2
     if pa == pb:
-        score += 2
-    elif abs(pa - pb) <= 0.005 * max(pa, pb):
+        score += 1 if rent else 2
+    elif abs(pa - pb) <= 0.005 * max(pa, pb) and not rent:
         score += 1
     if ra and rb:
         score += 1
@@ -342,25 +432,35 @@ def pair_score(a: dict, b: dict) -> Optional[int]:
             score += 1
         else:
             return None
-    if a.get("lat") and b.get("lat") and a.get("lon") and b.get("lon"):
+    if (a.get("lat") and b.get("lat") and a.get("lon") and b.get("lon")
+            and a.get("geo", GEO_EXACT) == GEO_EXACT and b.get("geo", GEO_EXACT) == GEO_EXACT):
+        # tylko prawdziwe współrzędne z portali — przybliżone (ulica/osiedle) nic nie mówią
         dlat, dlon = abs(a["lat"] - b["lat"]), abs(a["lon"] - b["lon"])
         # ~1,5 km — współrzędne bywają przybliżone do środka dzielnicy
         if dlat > 0.015 or dlon > 0.022:
             return None
         if dlat < 0.0015 and dlon < 0.0022:  # ~150 m
             score += 1
+            near = True
+    if rent and not (near or (sa and sb)):
+        # przy wynajmie same parametry (metraż, czynsz, pokoje) często się powtarzają —
+        # bez zgodnej ulicy lub bliskich współrzędnych wymagamy dodatkowego punktu
+        score -= 1
     return score
 
 
 MIN_SCORE = 6
+MIN_SCORE_RENT = 7  # wynajem: ostrożniej, dane są bardziej „szumiące”
 
 
-def detect_duplicates(listings: List[dict]) -> None:
+def detect_duplicates(listings: List[dict], deal: str = "sprzedaz") -> None:
     """Ustawia rec['dup_group'] (str) dla grup ≥2 ofert z różnych portali, inaczej None.
 
     Konserwatywnie: dwie grupy łączymy tylko gdy KAŻDA para ofert z różnych portali
     między nimi pasuje (complete linkage), co zapobiega „łańcuszkom” fałszywych scaleń.
     """
+    rent = deal in RENT_DEALS
+    min_score = MIN_SCORE_RENT if rent else MIN_SCORE
     items = [l for l in listings if l.get("price") and l.get("area")]
     for l in listings:
         l["dup_group"] = None
@@ -381,8 +481,8 @@ def detect_duplicates(listings: List[dict]) -> None:
             for j in buckets.get(nb, ()):
                 if j <= i:
                     continue
-                s = pair_score(l, items[j])
-                if s is not None and s >= MIN_SCORE:
+                s = pair_score(l, items[j], rent)
+                if s is not None and s >= min_score:
                     scores[(i, j)] = s
 
     group_of = list(range(len(items)))
@@ -421,13 +521,78 @@ def detect_duplicates(listings: List[dict]) -> None:
             l.pop(k, None)
 
 
+# ---------------------------------------------------------------- state files
+
+def load_state(deal: str) -> Dict[str, dict]:
+    raw = load_json(deal_path(deal), None)
+    if raw is None and deal == "sprzedaz":
+        raw = load_json(LEGACY_LISTINGS_PATH, [])
+    if isinstance(raw, dict):
+        raw = raw.get("listings") or []
+    state: Dict[str, dict] = {}
+    for rec in raw or []:
+        if isinstance(rec, dict) and rec.get("key"):
+            rec["deal"] = deal
+            if rec.get("description"):
+                rec["description"] = trim_description(rec["description"])
+            rec.pop("price_per_m2", None)
+            state[rec["key"]] = rec
+    return state
+
+
+def migrate_legacy() -> None:
+    """docs/data/listings.json (stary format, tylko sprzedaż) → docs/data/sprzedaz.json."""
+    if not LEGACY_LISTINGS_PATH.exists():
+        return
+    if not deal_path("sprzedaz").exists():
+        state = load_state("sprzedaz")
+        save_state("sprzedaz", list(state.values()))
+        log.info("Przeniesiono %d ofert z listings.json do sprzedaz.json", len(state))
+    try:
+        LEGACY_LISTINGS_PATH.unlink()
+    except OSError as e:
+        log.warning("Nie udało się usunąć %s: %s", LEGACY_LISTINGS_PATH, e)
+
+
+FIELD_ORDER = (
+    "key", "source", "id", "deal", "url", "title", "price", "rent_extra", "deposit", "available_from",
+    "area", "rooms", "floor", "district", "street", "market", "seller", "build_year",
+    "images", "description", "lat", "lon", "geo", "created_at",
+) + STATE_FIELDS
+
+
+def compact_record(r: dict) -> dict:
+    """Stała kolejność pól (mniejsze diffy w git), bez pustych pól (mniejszy plik)."""
+    out = {}
+    for k in FIELD_ORDER:
+        v = r.get(k)
+        if v is None or v == "" or (v == [] and k != "price_history"):
+            continue
+        out[k] = v
+    for k in sorted(r):
+        if k not in out and k not in FIELD_ORDER and not k.startswith("_"):
+            v = r[k]
+            if v is None or v == "" or v == []:
+                continue
+            out[k] = v
+    out["active"] = bool(r.get("active"))
+    return out
+
+
+def save_state(deal: str, listings: List[dict]) -> None:
+    listings = sorted(listings, key=lambda r: (r.get("first_seen") or "", r.get("key")), reverse=True)
+    atomic_write_json(deal_path(deal), [compact_record(r) for r in listings], compact=True)
+
+
 # ---------------------------------------------------------------- main
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
-    ap = argparse.ArgumentParser(description="Scraper mieszkań na sprzedaż we Wrocławiu")
+    ap = argparse.ArgumentParser(description="Scraper ofert mieszkań we Wrocławiu (kupno, wynajem, pokoje)")
     ap.add_argument("--max-pages", type=int, default=None, help="nadpisuje max_pages z config.yaml")
     ap.add_argument("--sources", default=None,
                     help="lista portali po przecinku (np. otodom,olx); pozostałe nie są ruszane")
+    ap.add_argument("--deals", default=None,
+                    help="typy ogłoszeń po przecinku (%s); pozostałe nie są ruszane" % ",".join(DEALS))
     ap.add_argument("--config", default=str(CONFIG_PATH))
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -443,103 +608,176 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         config["max_pages"] = args.max_pages
 
     configured = {k: bool(v) for k, v in (config.get("sources") or {}).items()}
-    enabled = [k for k, v in configured.items() if v]
     if args.sources:
         to_run = [s.strip() for s in args.sources.split(",") if s.strip()]
     else:
-        to_run = enabled
+        to_run = [k for k, v in configured.items() if v]
+
+    enabled_deals = [d for d in DEALS if d in config["deals"] and config["deals"][d]["enabled"]]
+    if args.deals:
+        wanted = [d.strip() for d in args.deals.split(",") if d.strip()]
+        bad = [d for d in wanted if d not in DEALS]
+        if bad:
+            ap.error("nieznany typ ogłoszeń: %s (dozwolone: %s)" % (", ".join(bad), ", ".join(DEALS)))
+        for d in wanted:
+            config["deals"].setdefault(d, {"enabled": True, "prefilter": {}})
+        deals_to_run = [d for d in DEALS if d in wanted]
+    else:
+        deals_to_run = enabled_deals
+
+    migrate_legacy()
 
     start = utc_now()
     prev_meta = load_json(META_PATH, {}) or {}
-    prev_src_meta = prev_meta.get("sources") or {} if isinstance(prev_meta, dict) else {}
+    if not isinstance(prev_meta, dict):
+        prev_meta = {}
+    prev_deals_meta = prev_meta.get("deals") or {}
+    if not prev_deals_meta and prev_meta.get("sources"):
+        # stary meta.json: statusy dotyczyły sprzedaży
+        prev_deals_meta = {"sprzedaz": {"sources": prev_meta.get("sources") or {},
+                                        "first_run": prev_meta.get("first_run")}}
 
-    raw_state = load_json(LISTINGS_PATH, [])
-    if isinstance(raw_state, dict):
-        raw_state = raw_state.get("listings") or []
-    state: Dict[str, dict] = {}
-    for rec in raw_state:
-        if isinstance(rec, dict) and rec.get("key"):
-            state[rec["key"]] = rec
-
-    scraped: Dict[str, List[dict]] = {}
-    src_meta: Dict[str, dict] = {}
-    ok_sources: Set[str] = set()
-    failed: Set[str] = set()
-
-    # Portale to różne serwery, więc pobieramy je równolegle.
-    def timed_run(name: str) -> Tuple[List[dict], Optional[str], float]:
-        t0 = time.time()
-        log.info("[%s] start", name)
-        items, err = run_source(name, config)
-        return items, err, round(time.time() - t0, 1)
-
-    with ThreadPoolExecutor(max_workers=max(1, len(to_run))) as pool:
-        results = dict(zip(to_run, pool.map(timed_run, to_run)))
-
+    # --- które (portal, typ) uruchamiamy
+    modules: Dict[str, Any] = {}
+    import_errors: Dict[str, str] = {}
+    plan: Dict[str, List[str]] = {}
     for name in to_run:
-        items, err, dt = results[name]
-        prev = prev_src_meta.get(name) or {}
-        info = {"count": len(items), "duration_s": dt, "last_run": iso(utc_now())}
-        if err:
-            info.update(status="error", error=err, last_ok=prev.get("last_ok"))
-            failed.add(name)
-        elif not items:
-            # 0 ofert bez wyjątku to prawie na pewno blokada / zmiana strony —
-            # nie wygaszamy wtedy starych ofert.
-            info.update(status="error", error="Portal nie zwrócił żadnych ofert (możliwa blokada lub zmiana strony).",
-                        last_ok=prev.get("last_ok"))
-            failed.add(name)
-        else:
-            info.update(status="ok", error=None, last_ok=info["last_run"])
-            ok_sources.add(name)
-            ok_sources.update(d["source"] for d in items)
-            scraped[name] = items
-        src_meta[name] = info
-        log.info("[%s] %s: %d ofert w %.1fs", name, info["status"], len(items), dt)
+        try:
+            modules[name] = load_module(name)
+        except Exception as e:
+            log.error("[%s] nie można wczytać modułu: %s", name, e)
+            import_errors[name] = ("%s: %s" % (type(e).__name__, e))[:500]
+            plan[name] = list(deals_to_run)  # oznaczymy jako błąd w każdym typie
+            continue
+        supported = module_deals(modules[name])
+        plan[name] = [d for d in deals_to_run if d in supported]
+        skipped = [d for d in deals_to_run if d not in supported]
+        if skipped:
+            log.info("[%s] nie obsługuje: %s", name, ", ".join(skipped))
 
-    # portale nieuruchamiane w tym przebiegu (np. --sources) — zostawiamy w meta poprzedni stan
-    if args.sources:
+    # --- pobieranie: portale równolegle, typy jednego portalu po kolei
+    results: Dict[Tuple[str, str], Tuple[List[dict], Optional[str], float, str]] = {}
+
+    def run_all_deals(name: str) -> None:
+        for i, deal in enumerate(plan[name]):
+            if name in import_errors:
+                results[(name, deal)] = ([], import_errors[name], 0.0, iso(utc_now()))
+                continue
+            if i:
+                time.sleep(PAUSE_BETWEEN_DEALS)
+            t0 = time.time()
+            log.info("[%s/%s] start", name, deal)
+            items, err = run_source(name, modules[name], config, deal)
+            dt = round(time.time() - t0, 1)
+            results[(name, deal)] = (items, err, dt, iso(utc_now()))
+            log.info("[%s/%s] %s: %d ofert w %.1fs", name, deal, "BŁĄD" if err else "ok", len(items), dt)
+
+    names = [n for n in to_run if plan.get(n)]
+    if names:
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            list(pool.map(run_all_deals, names))
+
+    # --- scalanie, osobno dla każdego typu
+    deals_meta: Dict[str, dict] = {}
+    for deal, prev in prev_deals_meta.items():
+        if deal in DEALS and isinstance(prev, dict):
+            deals_meta[deal] = prev
+    all_failed: List[str] = []
+
+    for deal in deals_to_run:
+        prev_dm = prev_deals_meta.get(deal) or {}
+        prev_src_meta = prev_dm.get("sources") or {}
+        state = load_state(deal)
+
+        scraped: Dict[str, List[dict]] = {}
+        src_meta: Dict[str, dict] = {}
+        ok_sources: Set[str] = set()
+        failed: Set[str] = set()
+
+        for name in to_run:
+            if (name, deal) not in results:
+                continue
+            items, err, dt, finished = results[(name, deal)]
+            prev = prev_src_meta.get(name) or {}
+            info = {"count": len(items), "duration_s": dt, "last_run": finished}
+            if err:
+                info.update(status="error", error=err, last_ok=prev.get("last_ok"))
+                failed.add(name)
+            elif not items:
+                # 0 ofert bez wyjątku to prawie na pewno blokada / zmiana strony —
+                # nie wygaszamy wtedy starych ofert.
+                info.update(status="error",
+                            error="Portal nie zwrócił żadnych ofert (możliwa blokada lub zmiana strony).",
+                            last_ok=prev.get("last_ok"))
+                failed.add(name)
+            else:
+                info.update(status="ok", error=None, last_ok=finished)
+                ok_sources.add(name)
+                ok_sources.update(d["source"] for d in items)
+                scraped[name] = items
+            # pierwszy udany przebieg: oferty z niego to „stan wyjściowy”, nie nowości
+            info["first_ok"] = (prev.get("first_ok")
+                                or (prev_dm.get("first_run") if prev.get("last_ok") else None)
+                                or (iso(start) if info["status"] == "ok" else None))
+            src_meta[name] = info
+
+        # portale nieuruchamiane w tym przebiegu — w meta zostaje poprzedni stan
+        selective = bool(args.sources)
         for name, prev in prev_src_meta.items():
-            if name not in src_meta:
+            if name not in src_meta and (selective or configured.get(name)):
                 src_meta[name] = prev
 
-    known_sources = {r.get("source") for r in state.values()}
-    if args.sources:
-        # ręczny wybór portali: wszystkie pozostałe zostają nietknięte
-        untouched = (known_sources - ok_sources) | failed
-    else:
-        untouched = set(failed)
+        known_sources = {r.get("source") for r in state.values()}
+        if selective:
+            untouched = (known_sources - ok_sources) | failed
+        else:
+            untouched = set(failed)
 
-    merged = merge(state, scraped, ok_sources, untouched, start,
-                   int(config.get("drop_after_days") or 14),
-                   config.get("partial_sources") or {})
+        merged = merge(state, scraped, ok_sources, untouched, start,
+                       int(config.get("drop_after_days") or 14),
+                       config.get("partial_sources") or {})
+        listings = list(merged.values())
+        for r in listings:
+            r["deal"] = deal
+        detect_duplicates(listings, deal)
+        try:
+            geo_stats = geocode_listings(listings)
+            log.info("[%s] lokalizacje: %s", deal,
+                     ", ".join("%s=%d" % kv for kv in sorted(geo_stats.items())))
+        except Exception as e:  # geokodowanie jest dodatkiem — nie może zepsuć przebiegu
+            log.warning("[%s] geokodowanie nie powiodło się: %s", deal, e)
+            geo_stats = {}
+        save_state(deal, listings)
 
-    listings = list(merged.values())
-    detect_duplicates(listings)
-    listings.sort(key=lambda r: (r.get("first_seen") or "", r.get("key")), reverse=True)
+        n_active = sum(1 for r in listings if r.get("active"))
+        n_groups = len({r["dup_group"] for r in listings if r.get("dup_group")})
+        deals_meta[deal] = {
+            "label": DEAL_LABELS[deal],
+            "file": deal_path(deal).name,
+            "first_run": prev_dm.get("first_run") or iso(start),
+            "last_run": iso(start),
+            "total": len(listings),
+            "active": n_active,
+            "dup_groups": n_groups,
+            "geo": dict(sorted(geo_stats.items())),
+            "sources": dict(sorted(src_meta.items())),
+        }
+        all_failed.extend("%s/%s" % (n, deal) for n in sorted(failed))
+        log.info("[%s] zapisano %d ofert (%d aktywnych, %d grup duplikatów)",
+                 deal, len(listings), n_active, n_groups)
 
-    # stała kolejność pól w rekordzie = mniejsze diffy w git
-    for r in listings:
-        for f in STATE_FIELDS:
-            r.setdefault(f, None)
-
-    atomic_write_json(LISTINGS_PATH, listings, compact=True)
-
-    n_active = sum(1 for r in listings if r.get("active"))
-    n_groups = len({r["dup_group"] for r in listings if r.get("dup_group")})
+    # typy wyłączone w config.yaml nie pokazują się na stronie
+    shown_deals = [d for d in DEALS if d in enabled_deals or d in deals_to_run]
     meta = {
         "last_run": iso(start),
-        "first_run": (prev_meta.get("first_run") if isinstance(prev_meta, dict) else None) or iso(start),
+        "first_run": prev_meta.get("first_run") or iso(start),
         "finished": iso(utc_now()),
-        "total": len(listings),
-        "active": n_active,
-        "dup_groups": n_groups,
         "drop_after_days": config.get("drop_after_days"),
-        "sources": dict(sorted(src_meta.items())),
+        "enabled_deals": shown_deals,
+        "deals": {d: deals_meta[d] for d in DEALS if d in deals_meta},
     }
     atomic_write_json(META_PATH, meta)
-    log.info("Zapisano %d ofert (%d aktywnych, %d grup duplikatów). Błędy: %s",
-             len(listings), n_active, n_groups, ", ".join(sorted(failed)) or "brak")
+    log.info("Gotowe. Błędy: %s", ", ".join(all_failed) or "brak")
     return 0
 
 

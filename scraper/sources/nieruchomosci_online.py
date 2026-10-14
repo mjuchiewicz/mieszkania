@@ -1,12 +1,24 @@
-"""Scraper nieruchomosci-online.pl — mieszkania na sprzedaż we Wrocławiu.
+"""Scraper nieruchomosci-online.pl — mieszkania na sprzedaż, mieszkania na wynajem
+i pokoje na wynajem we Wrocławiu.
 
 Wyniki są renderowane po stronie serwera. Dane bierzemy z kafelków HTML
 (`div.tile[data-id]`: cena, metraż, piętro, pokoje, rok budowy, dzielnica,
 rynek w `data-market-type`), a ulicę uzupełniamy z JSON-LD (CollectionPage ->
 AggregateOffer -> offers[].itemOffered.address.streetAddress).
 
-Format filtrów w URL: szukaj.html?3,mieszkanie,sprzedaz,,Wrocław,,,,<cenaOd>-<cenaDo>,<metrażOd>
+Format filtrów w URL: szukaj.html?3,<rodzaj>,<transakcja>,,Wrocław,,,,<cenaOd>-<cenaDo>,<metrażOd>
+gdzie rodzaj/transakcja to mieszkanie,sprzedaz | mieszkanie,wynajem | pokoj,wynajem.
 Paginacja: &p=N.
+
+Wynajem: cena w kafelku to czynsz najmu zł/mies. Kafelki pokoi mają atrybut
+"Kaucja"; czynszu administracyjnego ani daty dostępności lista nie podaje.
+
+Cechy mieszkania: piętro "3/8" -> floor_num/floors_total; atrybut
+"Umeblowane"/"Umeblowany" (wynajem/pokoje) -> furnished. Typ budynku, stan
+i część udogodnień portal koduje w adresie SEO oferty, generowanym z danych
+ogłoszenia, np. ``/mieszkanie-w-apartamentowcu,wysoki-standard/123.html``,
+``/mieszkanie-w-bloku-mieszkalnym,deweloperski/...``, ``/pokoj-umeblowany/...``
+— bierzemy tylko znane tokeny (reszta to m.in. nazwy inwestycji).
 """
 from __future__ import annotations
 
@@ -20,19 +32,28 @@ from bs4 import BeautifulSoup
 
 from scraper.http import make_session, polite_sleep
 from scraper.models import Listing
+from scraper.sources.gratka import floor_numbers
 
 log = logging.getLogger(__name__)
 
 SOURCE = "nieruchomosci_online"
 BASE = "https://wroclaw.nieruchomosci-online.pl/szukaj.html"
+DEALS = ("sprzedaz", "wynajem", "pokoj")
+# typ ogłoszenia -> (rodzaj nieruchomości, transakcja) w URL wyszukiwarki
+_DEAL_PATH = {
+    "sprzedaz": ("mieszkanie", "sprzedaz"),
+    "wynajem": ("mieszkanie", "wynajem"),
+    "pokoj": ("pokoj", "wynajem"),
+}
 
 
-def _search_url(config: dict, page: int) -> str:
+def _search_url(config: dict, page: int, deal: str = "sprzedaz") -> str:
     pre = config.get("prefilter") or {}
     pmin = int(pre["price_min"]) if pre.get("price_min") else None
     pmax = int(pre["price_max"]) if pre.get("price_max") else None
     amin = int(pre["area_min"]) if pre.get("area_min") else None
-    parts = ["3", "mieszkanie", "sprzedaz", "", quote("Wrocław")]
+    kind, trans = _DEAL_PATH[deal]
+    parts = ["3", kind, trans, "", quote("Wrocław")]
     if pmin or pmax or amin:
         price = ""
         if pmin or pmax:
@@ -80,6 +101,80 @@ def _ld_streets(soup: BeautifulSoup) -> Dict[str, str]:
     return out
 
 
+# 1. segment adresu SEO: "mieszkanie-w-<typ budynku>"
+_SLUG_BUILDING = (
+    ("apartamentow", "apartamentowiec"),
+    ("kamieni", "kamienica"),
+    ("loft", "loft"),
+    ("szeregow", "szeregowiec"),
+    ("wielorodzin", "blok"),
+    ("blok", "blok"),
+    ("wiezow", "blok"),
+    ("domu", "dom"),
+)
+# pozostałe segmenty adresu SEO (dokładne dopasowanie tokenu)
+_SLUG_CONDITION = {
+    "do-remontu": "do_remontu",
+    "do-kapitalnego-remontu": "do_remontu",
+    "deweloperski": "stan_deweloperski",
+    "stan-deweloperski": "stan_deweloperski",
+    "do-wykonczenia": "do_wykonczenia",
+    "stan-surowy": "do_wykonczenia",
+    "surowy": "do_wykonczenia",
+    "wysoki-standard": "do_zamieszkania",
+    "nowe-wykonczone": "do_zamieszkania",
+    "po-remoncie": "do_zamieszkania",
+    "po-generalnym-remoncie": "do_zamieszkania",
+    "do-zamieszkania": "do_zamieszkania",
+    "dobry-standard": "do_zamieszkania",
+    "bardzo-dobry-standard": "do_zamieszkania",
+    "do-odswiezenia": "do_zamieszkania",
+}
+_SLUG_FEATURES = {
+    "z-balkonem": "balkon",
+    "z-tarasem": "taras",
+    "z-loggia": "loggia",
+    "z-ogrodkiem": "ogrodek",
+    "z-ogrodem": "ogrodek",
+    "z-winda": "winda",
+    "z-garazem": "garaz",
+    "z-miejscem-parkingowym": "parking",
+    "z-piwnica": "piwnica",
+    "z-komorka-lokatorska": "komorka",
+    "z-klimatyzacja": "klimatyzacja",
+}
+
+
+def _slug_info(url: str) -> Dict[str, object]:
+    """Typ budynku / stan / cechy / umeblowanie z adresu SEO oferty."""
+    out: Dict[str, object] = {"features": []}
+    m = re.search(r"\.pl/([^/?#]+)/\d+\.html", url)
+    if not m:
+        return out
+    tokens = m.group(1).lower().split(",")
+    first = tokens[0]
+    if first.startswith("mieszkanie-w-"):
+        for needle, bt in _SLUG_BUILDING:
+            if needle in first:
+                out["building_type"] = bt
+                break
+    if "umeblowan" in first:
+        out["furnished"] = True
+    for t in tokens[1:]:
+        if t in _SLUG_CONDITION and "condition" not in out:
+            out["condition"] = _SLUG_CONDITION[t]
+        elif t in _SLUG_FEATURES and _SLUG_FEATURES[t] not in out["features"]:
+            out["features"].append(_SLUG_FEATURES[t])  # type: ignore[union-attr]
+        elif t in ("umeblowane", "umeblowany"):
+            out["furnished"] = True
+    return out
+
+
+def _yes_no(v: Optional[str]) -> Optional[bool]:
+    v = (v or "").strip().lower()
+    return True if v == "tak" else False if v == "nie" else None
+
+
 def _attrs(tile) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for p in tile.select(".attributes__box--item p"):
@@ -92,7 +187,7 @@ def _attrs(tile) -> Dict[str, str]:
     return out
 
 
-def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
+def _parse_tile(tile, streets: Dict[str, str], deal: str = "sprzedaz") -> Optional[Listing]:
     data_id = tile.get("data-id") or ""
     m = re.match(r"^(?:a|i\d+_)(\d+)$", data_id)
     if not m:
@@ -127,6 +222,11 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
     if attrs.get("liczba pokoi", "").isdigit():
         rooms = int(attrs["liczba pokoi"])
     floor = attrs.get("piętro") or None
+    if floor and not re.search(r"\w", floor):
+        floor = None  # "-" = brak danych
+    floor_num, floors_total = floor_numbers(floor)
+    if floor_num is not None and floors_total is not None and floors_total < floor_num:
+        floors_total = None
     build_year = None
     by = re.search(r"\d{4}", attrs.get("rok budowy", ""))
     if by:
@@ -139,7 +239,8 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
         txt = a.get_text(" ", strip=True) if a else prov.get_text(" ", strip=True)
         txt = re.sub(r"\s+", " ", txt).strip().rstrip(",").strip()
         txt = re.sub(r",?\s*Wrocław$", "", txt).strip()
-        if txt and txt.lower() != "wrocław":
+        # "Wrocław, dolnośląskie" = brak dzielnicy
+        if txt and not txt.lower().startswith("wrocław"):
             district = txt
 
     street = streets.get(lid)
@@ -152,6 +253,11 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
 
     mt = tile.get("data-market-type")
     market = {"primary": "pierwotny", "secondary": "wtorny"}.get(mt or "")
+    deposit = None
+    if deal != "sprzedaz":
+        market = None  # podział na rynki nie dotyczy wynajmu
+        dv = _num(attrs.get("kaucja"))
+        deposit = int(dv) if dv else None
     seller = "deweloper" if data_id.startswith("i") else None
 
     images: List[str] = []
@@ -159,6 +265,11 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
         src = img.get("src") or img.get("data-src")
         if src and src.startswith("http") and src not in images:
             images.append(src)
+
+    slug = _slug_info(url)
+    furnished = _yes_no(attrs.get("umeblowane") or attrs.get("umeblowany"))
+    if furnished is None:
+        furnished = slug.get("furnished")  # type: ignore[assignment]
 
     desc_el = tile.select_one("p.desc")
     desc = desc_el.get_text(" ", strip=True)[:500] if desc_el else None
@@ -168,6 +279,7 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
         id=lid,
         url=url,
         title=title,
+        deal=deal,
         price=price,
         area=area,
         rooms=rooms,
@@ -179,6 +291,13 @@ def _parse_tile(tile, streets: Dict[str, str]) -> Optional[Listing]:
         build_year=build_year,
         images=images,
         description=desc or None,
+        floor_num=floor_num,
+        floors_total=floors_total,
+        furnished=furnished,
+        condition=slug.get("condition"),  # type: ignore[arg-type]
+        building_type=slug.get("building_type"),  # type: ignore[arg-type]
+        features=list(slug["features"]),  # type: ignore[call-overload]
+        deposit=deposit,
     )
 
 
@@ -189,7 +308,9 @@ def _last_page(soup: BeautifulSoup) -> Optional[int]:
     return max(nums) if nums else None
 
 
-def scrape(config: dict) -> List[Listing]:
+def scrape(config: dict, deal: str = "sprzedaz") -> List[Listing]:
+    if deal not in _DEAL_PATH:
+        raise ValueError(f"nieruchomosci_online: nieobsługiwany typ ogłoszenia {deal!r}")
     max_pages = int(config.get("max_pages") or 30)
     session = make_session()
     seen: set = set()
@@ -198,21 +319,22 @@ def scrape(config: dict) -> List[Listing]:
     for page in range(1, max_pages + 1):
         if page > 1:
             polite_sleep()
-        url = _search_url(config, page)
+        url = _search_url(config, page, deal)
         try:
             resp = session.get(url, timeout=30)
             resp.raise_for_status()
         except Exception as e:  # noqa: BLE001
             if page == 1:
-                raise RuntimeError(f"nieruchomosci_online: nie udało się pobrać 1. strony: {e}") from e
-            log.warning("nieruchomosci_online: błąd strony %d: %s — przerywam", page, e)
+                raise RuntimeError(
+                    f"nieruchomosci_online: nie udało się pobrać 1. strony ({deal}): {e}") from e
+            log.warning("nieruchomosci_online: błąd strony %d (%s): %s — przerywam", page, deal, e)
             break
         soup = BeautifulSoup(resp.text, "lxml")
         tiles = soup.select("div.tile[data-id]")
         if page == 1:
             if not tiles:
                 raise RuntimeError(
-                    "nieruchomosci_online: brak kafelków ofert na 1. stronie — zmiana struktury "
+                    f"nieruchomosci_online: brak kafelków ofert na 1. stronie ({deal}) — zmiana struktury "
                     f"strony lub blokada? URL: {resp.url}")
         if not tiles:
             break
@@ -223,7 +345,7 @@ def scrape(config: dict) -> List[Listing]:
         new = 0
         for t in tiles:
             try:
-                lst = _parse_tile(t, streets)
+                lst = _parse_tile(t, streets, deal)
             except Exception as e:  # noqa: BLE001
                 log.warning("nieruchomosci_online: błąd parsowania kafelka %s: %s", t.get("data-id"), e)
                 continue
@@ -232,20 +354,26 @@ def scrape(config: dict) -> List[Listing]:
             seen.add(lst.key)
             results.append(lst)
             new += 1
-        log.info("nieruchomosci_online: strona %d — %d nowych", page, new)
+        log.info("nieruchomosci_online %s: strona %d — %d nowych", deal, page, new)
         if new == 0 or (last_page is not None and page >= last_page):
             break
     return results
 
 
 if __name__ == "__main__":
+    import sys
+
     import yaml
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     with open("config.yaml", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    deal_arg = sys.argv[1] if len(sys.argv) > 1 else "sprzedaz"
     cfg["max_pages"] = 2
-    res = scrape(cfg)
+    deal_cfg = (cfg.get("deals") or {}).get(deal_arg) or {}
+    if "prefilter" in deal_cfg:
+        cfg["prefilter"] = deal_cfg.get("prefilter") or {}
+    res = scrape(cfg, deal_arg)
     print(f"{len(res)} ofert")
     for r in res[:3]:
         print(json.dumps(r.to_dict(), ensure_ascii=False, indent=2))
