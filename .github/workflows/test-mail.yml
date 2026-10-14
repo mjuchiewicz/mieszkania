@@ -1,0 +1,31 @@
+name: Mail testowy
+
+# Ręcznie (Actions → Mail testowy → Run workflow): wysyła JEDEN przykładowy mail
+# (5 najnowszych ofert kupna, temat z [TEST]) na adres z sekretu GMAIL_USER.
+# Logi są publiczne — skrypt nie wypisuje adresów ani haseł.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-mail:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalacja zależności
+        run: pip install -r requirements.txt
+
+      - name: Wysyłka maila testowego
+        env:
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: python -m scraper.alerts --test

@@ -1086,8 +1086,12 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                                     "domyślnie: ostatni przebieg pobierania")
     ap.add_argument("--preview-dir", default=None, help="gdzie zapisać podgląd maili (dry-run)")
     ap.add_argument("--site-url", default=None)
+    ap.add_argument("--test", action="store_true",
+                    help="wyślij JEDEN przykładowy mail (5 najnowszych ofert kupna, temat z [TEST]) na GMAIL_USER")
     args = ap.parse_args(list(argv) if argv is not None else None)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", stream=sys.stderr)
+    if args.test:
+        return run_test(args)
     try:
         return run(args)
     except Exception as e:  # nigdy nie psujemy przebiegu (i nie wypisujemy treści alertów)
@@ -1203,6 +1207,58 @@ def run(args) -> int:
     if not args.dry_run:
         log.info("Powiadomienia: %d %s, wysłano %d %s.", len(raw_alerts),
                  plural(len(raw_alerts), "alert", "alerty", "alertów"), sent_total, plural(sent_total, "mail", "maile", "maili"))
+    return 0
+
+
+TEST_COUNT = 5
+
+
+def run_test(args) -> int:
+    """Mail testowy: prawdziwy szablon, 5 najnowszych aktywnych ofert kupna, na adres GMAIL_USER.
+    W logach tylko wynik (bez adresów i haseł). Kod wyjścia 1 = nie udało się wysłać."""
+    user = (os.environ.get("GMAIL_USER") or "").strip()
+    password = re.sub(r"\s+", "", os.environ.get("GMAIL_APP_PASSWORD") or "")
+    deal = "sprzedaz"
+    listings = [l for l in load_listings(DEFAULT_CITY, deal) if l.get("active")]
+    listings.sort(key=lambda l: (l.get("first_seen") or "", l.get("key") or ""), reverse=True)
+    sample = listings[:TEST_COUNT]
+    if not sample:
+        log.error("Test: brak ofert w docs/data/%s/%s.json", DEFAULT_CITY, deal)
+        return 1
+    alert = normalize_alert({"v": ALERT_VERSION, "name": "Test powiadomień", "deal": deal,
+                             "city": DEFAULT_CITY, "filters": {}, "price_drops": False})
+    site = args.site_url or site_url_default()
+    repo = os.environ.get("GITHUB_REPOSITORY") or REPO
+    subject, body, text = render_email(alert, sample, [], listings, "", site, repo)
+    subject = "[TEST] " + subject
+    body = body.replace("<title>", "<title>[TEST] ", 1)
+    text = "[TEST] " + text
+    if args.dry_run:
+        preview = Path(args.preview_dir or ".")
+        preview.mkdir(parents=True, exist_ok=True)
+        (preview / "test_mail.html").write_text(body, encoding="utf-8")
+        print("Temat:", subject)
+        print("Podgląd: %s" % (preview / "test_mail.html"))
+        return 0
+    if not (user and password):
+        log.error("Test: brak sekretów GMAIL_USER / GMAIL_APP_PASSWORD — nie wysyłam.")
+        return 1
+    try:
+        smtp = _connect(user, password)
+        try:
+            smtp.send_message(build_message(user, user, subject, body, text))
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                pass
+    except smtplib.SMTPAuthenticationError:
+        log.error("Test: Gmail odrzucił logowanie — sprawdź sekrety GMAIL_USER i GMAIL_APP_PASSWORD.")
+        return 1
+    except (smtplib.SMTPException, OSError) as e:
+        log.error("Test: błąd wysyłki (%s).", type(e).__name__)
+        return 1
+    log.info("Test: wysłano 1 mail testowy (%d ofert) na adres z sekretu GMAIL_USER.", len(sample))
     return 0
 
 
