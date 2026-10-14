@@ -1386,7 +1386,7 @@
     var bad = names.filter(function (k) { return srcs[k] && srcs[k].status !== "ok"; });
     var btn = $("statusBtn");
     btn.classList.toggle("has-warn", bad.length > 0);
-    var txt = last ? '<span class="hide-sm">Aktualizacja </span>' + esc(ago(last)) : "Brak aktualizacji";
+    var txt = last ? esc(ago(last)) : "Brak aktualizacji";
     if (bad.length) txt = bad.length === 1 ? "1 portal nie działa" : bad.length + " " + plural(bad.length, "portal", "portale", "portali") + ' <span class="hide-sm">nie działa</span>';
     $("updated").innerHTML = txt;
     btn.title = last ? "Ostatnia aktualizacja: " + fmtDate(last) : "";
