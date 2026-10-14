@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import re
+import time
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from scraper.http import make_session, polite_sleep
@@ -22,6 +24,25 @@ SOURCE = "otodom"
 BASE = "https://www.otodom.pl"
 SEARCH_URL = BASE + "/pl/wyniki/sprzedaz/mieszkanie/dolnoslaskie/wroclaw/wroclaw/wroclaw"
 LIMIT = 72
+
+# Tempo / blokady: Otodom stoi za CloudFront + AWS WAF (reguła rate-based
+# per IP). Po przekroczeniu limitu odpowiada HTTP 405 ze stroną
+# "Human Verification" (AWS WAF CAPTCHA, nie do przejścia bez JS). Blokada
+# trwa od ~1 min do >8 min i po "rozgrzaniu" IP wraca już po ~10-20 żądaniach.
+# Dlatego: wolne tempo, backoff na tej samej stronie aż do budżetu czasu,
+# a kolejność stron = najpierw najnowsze (HEAD_PAGES), potem reszta od losowego
+# miejsca — przy niepełnych przebiegach kolejne uruchomienia pokrywają różne
+# fragmenty listy, więc stare oferty też są co jakiś czas odświeżane.
+SLEEP_RANGE = (3.0, 5.0)       # s między stronami (bazowo)
+SLOWDOWN_FACTOR = 1.5          # po każdej blokadzie tempo zwalnia ×1.5 ...
+MAX_SLOWDOWN = 3.0             # ... maks. ×3
+COOLDOWN_EVERY = 40            # co tyle żądań dłuższa pauza
+COOLDOWN_S = 20
+BLOCK_STATUSES = (403, 405, 429)
+BACKOFF_S = (30, 60, 120, 180)  # dalej powtarzane 180 s aż do końca budżetu
+HEAD_PAGES = 6                 # tyle pierwszych (najnowszych) stron zawsze najpierw
+MAX_FAIL_STREAK = 3            # inne błędy z rzędu, po których porzucamy rynek
+MAX_RUNTIME_S = 8 * 60         # łączny budżet czasu (z backoffem)
 
 MARKETS = (("SECONDARY", "wtorny"), ("PRIMARY", "pierwotny"))
 
@@ -67,13 +88,23 @@ def _build_params(config: dict, market: str, page: int) -> Dict[str, Any]:
     return params
 
 
+class BlockedError(OtodomError):
+    """Odpowiedź wyglądająca na blokadę / rate limit (403/405/429, captcha)."""
+
+
 def _fetch_search(session, params: Dict[str, Any]) -> Tuple[List[dict], dict]:
-    """Zwraca (items, pagination). Rzuca wyjątek przy błędzie."""
+    """Zwraca (items, pagination). Rzuca BlockedError przy blokadzie, inne wyjątki przy błędzie."""
     resp = session.get(SEARCH_URL, params=params, timeout=30)
+    if resp.status_code in BLOCK_STATUSES:
+        raise BlockedError(
+            "HTTP %s (server=%s, cf-id=%s): %s"
+            % (resp.status_code, resp.headers.get("Server"),
+               resp.headers.get("X-Amz-Cf-Id"), resp.text[:200].replace("\n", " "))
+        )
     resp.raise_for_status()
     m = _NEXT_DATA_RE.search(resp.text)
     if not m:
-        raise OtodomError(
+        raise BlockedError(
             "brak __NEXT_DATA__ w odpowiedzi (HTTP %s, %d B) — możliwa blokada/captcha"
             % (resp.status_code, len(resp.text))
         )
@@ -85,6 +116,37 @@ def _fetch_search(session, params: Dict[str, Any]) -> Tuple[List[dict], dict]:
     items = search_ads.get("items") or []
     pagination = search_ads.get("pagination") or {}
     return items, pagination
+
+
+def _fetch_with_backoff(session, params: Dict[str, Any], stats: Dict[str, Any],
+                        deadline: float) -> Tuple[List[dict], dict]:
+    """Pobiera stronę; przy blokadzie czeka (30, 60, 120, 180, 180... s) i ponawia
+    TĘ SAMĄ stronę, dopóki starcza budżetu czasu."""
+    attempt = 0
+    while True:
+        stats["requests"] += 1
+        try:
+            return _fetch_search(session, params)
+        except BlockedError as e:
+            stats["blocked"] += 1
+            stats["slowdown"] = min(MAX_SLOWDOWN, stats["slowdown"] * SLOWDOWN_FACTOR)
+            wait = BACKOFF_S[min(attempt, len(BACKOFF_S) - 1)]
+            if time.time() + wait > deadline:
+                raise BlockedError("%s (koniec budżetu czasu)" % e)
+            attempt += 1
+            log.warning("otodom %s strona %s: %s — czekam %ds (próba %d)",
+                        params.get("market"), params.get("page"), str(e)[:120], wait, attempt)
+            time.sleep(wait)
+
+
+def _page_order(total_pages: int, rng: random.Random) -> List[int]:
+    """Strony 2..HEAD_PAGES po kolei, potem reszta od losowego miejsca (z zawinięciem)."""
+    head = list(range(2, min(HEAD_PAGES, total_pages) + 1))
+    tail = list(range(HEAD_PAGES + 1, total_pages + 1))
+    if tail:
+        k = rng.randrange(len(tail))
+        tail = tail[k:] + tail[:k]
+    return head + tail
 
 
 # --------------------------------------------------------------------------- #
@@ -243,44 +305,74 @@ def _iter_units(items: Iterable[dict]) -> Iterable[Tuple[dict, bool]]:
 
 def scrape(config: dict) -> List[Listing]:
     max_pages = int(config.get("max_pages") or 1)
+    # Otodom blokuje częste zapytania (CAPTCHA AWS WAF), więc pobieramy tylko
+    # najnowsze strony; starsze oferty trzyma aggregator (partial_sources).
+    max_pages = min(max_pages, int(config.get("otodom_max_pages") or max_pages))
     session = make_session()
+    rng = random.Random()
     results: List[Listing] = []
     seen: Set[str] = set()
+    t0 = time.time()
+    deadline = t0 + MAX_RUNTIME_S
 
-    # stan per rynek: następna strona lub None gdy skończone
-    next_page: Dict[str, Optional[int]] = {m: 1 for m, _ in MARKETS}
     market_label = dict(MARKETS)
-    requests_done = 0
-    any_page_ok = False
+    # kolejka stron per rynek; po pobraniu strony 1 dopisujemy resztę wg _page_order
+    queue: Dict[str, List[int]] = {m: [1] for m, _ in MARKETS}
+    total_pages: Dict[str, Optional[int]] = {m: None for m, _ in MARKETS}
+    done_pages: Dict[str, int] = {m: 0 for m, _ in MARKETS}
+    fail_streak: Dict[str, int] = {m: 0 for m, _ in MARKETS}
+    stats: Dict[str, Any] = {"requests": 0, "blocked": 0, "slowdown": 1.0}
+    pages_tried = 0
     first_errors: List[str] = []
+    stop_reason: Optional[str] = None
 
-    while requests_done < max_pages and any(p is not None for p in next_page.values()):
+    while not stop_reason and pages_tried < max_pages and any(queue.values()):
         for market, _label in MARKETS:
-            page = next_page[market]
-            if page is None or requests_done >= max_pages:
+            if not queue[market] or pages_tried >= max_pages:
                 continue
-            if requests_done:
-                polite_sleep()
-            requests_done += 1
+            if time.time() > deadline:
+                stop_reason = "koniec budżetu czasu %ds" % MAX_RUNTIME_S
+                break
+            page = queue[market].pop(0)
+            if stats["requests"]:
+                if stats["requests"] % COOLDOWN_EVERY == 0:
+                    time.sleep(COOLDOWN_S)
+                k = stats["slowdown"]
+                polite_sleep(SLEEP_RANGE[0] * k, SLEEP_RANGE[1] * k)
+            pages_tried += 1
             params = _build_params(config, market, page)
             try:
-                items, pagination = _fetch_search(session, params)
+                items, pagination = _fetch_with_backoff(session, params, stats, deadline)
+            except BlockedError as e:
+                log.warning("otodom %s strona %d: blokada nie minęła: %s",
+                            market, page, str(e)[:160])
+                if page == 1:
+                    first_errors.append("%s: %s" % (market, str(e)[:160]))
+                stop_reason = "blokada WAF (HTTP 405 'Human Verification') do końca budżetu czasu"
+                break
             except Exception as e:  # noqa: BLE001
-                log.warning("otodom %s strona %d: błąd pobierania: %s", market, page, e)
+                log.warning("otodom %s strona %d: błąd: %s", market, page, e)
                 if page == 1:
                     first_errors.append("%s: %s" % (market, e))
-                next_page[market] = None
+                    continue
+                fail_streak[market] += 1
+                if fail_streak[market] >= MAX_FAIL_STREAK:
+                    log.warning("otodom %s: %d błędów z rzędu — przerywam ten rynek",
+                                market, fail_streak[market])
+                    queue[market] = []
                 continue
+            fail_streak[market] = 0
 
             current = pagination.get("currentPage")
-            total_pages = pagination.get("totalPages")
-            # Otodom przy stronie poza zakresem przekierowuje na ostatnią/zmienioną
+            if page == 1 and pagination.get("totalPages") is not None:
+                total_pages[market] = int(pagination["totalPages"])
+                queue[market] = _page_order(total_pages[market], rng)
+            # strona poza zakresem -> Otodom przekierowuje na inną (bez filtrów); pomijamy
             if current is not None and int(current) != page:
-                log.info("otodom %s: strona %d poza zakresem (currentPage=%s) — koniec",
+                log.info("otodom %s: strona %d poza zakresem (currentPage=%s) — pomijam",
                          market, page, current)
-                next_page[market] = None
                 continue
-            any_page_ok = True
+            done_pages[market] += 1
 
             added = 0
             for raw, is_related in _iter_units(items):
@@ -299,20 +391,29 @@ def scrape(config: dict) -> List[Listing]:
                 seen.add(listing.id)
                 results.append(listing)
                 added += 1
-            log.info("otodom %s strona %d/%s: %d ofert (%d nowych)",
-                     market, page, total_pages, len(items), added)
+            log.info("otodom %s strona %d/%s: %d pozycji, %d nowych ofert",
+                     market, page, total_pages[market], len(items), added)
 
-            if not items or (total_pages is not None and page >= int(total_pages)):
-                next_page[market] = None
-            else:
-                next_page[market] = page + 1
-
-    if not any_page_ok:
+    if not any(done_pages.values()):
         raise OtodomError(
             "Otodom: nie udało się pobrać pierwszej strony wyników (%s)"
-            % "; ".join(first_errors or ["brak wyników"])
+            % "; ".join(first_errors or [stop_reason or "brak wyników"])
         )
-    log.info("otodom: łącznie %d ofert z %d żądań", len(results), requests_done)
+
+    missed = 0
+    for market, _ in MARKETS:
+        tp = total_pages[market]
+        if tp is not None:
+            missed += max(0, tp - done_pages[market])
+    elapsed = time.time() - t0
+    summary = "%d ofert, %d żądań, %d blokad (HTTP 405), %.0fs; pobrano %s" % (
+        len(results), stats["requests"], stats["blocked"], elapsed,
+        ", ".join("%s %d/%s" % (m, done_pages[m], total_pages[m]) for m, _ in MARKETS))
+    if missed:
+        log.warning("otodom: przebieg NIEPEŁNY — pominięto %d stron (%s); %s",
+                    missed, stop_reason or "limit max_pages / błędy stron", summary)
+    else:
+        log.info("otodom: komplet — %s", summary)
     return results
 
 

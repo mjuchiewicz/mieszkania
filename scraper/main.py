@@ -32,7 +32,7 @@ DATA_DIR = ROOT / "docs" / "data"
 LISTINGS_PATH = DATA_DIR / "listings.json"
 META_PATH = DATA_DIR / "meta.json"
 
-MAX_IMAGES = 6
+MAX_IMAGES = 1  # strona pokazuje tylko miniaturę
 MAX_DESCRIPTION = 600
 MAX_PRICE_HISTORY = 50
 
@@ -197,6 +197,7 @@ def merge(
     untouched_sources: Set[str],
     now: datetime,
     drop_after_days: int,
+    partial_sources: Optional[Dict[str, int]] = None,
 ) -> Dict[str, dict]:
     """Scala nowe wyniki z poprzednim stanem.
 
@@ -206,7 +207,12 @@ def merge(
                         w tym przebiegu: ich oferty zostają bez zmian.
     Pozostałe niewidziane oferty (np. z portali wyłączonych w config.yaml)
     dostają active=False i po drop_after_days wypadają z listy.
+    partial_sources   – {portal: dni} dla portali pobieranych tylko częściowo
+                        (najnowsze strony): niewidziana oferta nie jest jeszcze
+                        dowodem, że zniknęła, więc zostaje aktywna przez tyle dni
+                        od ostatniego zobaczenia.
     """
+    partial_sources = partial_sources or {}
     now_s = iso(now)
     seen: Set[str] = set()
 
@@ -247,6 +253,11 @@ def merge(
         if key not in seen:
             if src in untouched_sources:
                 out[key] = rec  # portal padł albo nie był uruchamiany — nic nie zmieniamy
+                continue
+            if src in partial_sources:
+                last = parse_iso(rec.get("last_seen")) or now
+                if last >= now - timedelta(days=int(partial_sources[src])):
+                    out[key] = rec
                 continue
             rec["active"] = False
         last = parse_iso(rec.get("last_seen")) or now
@@ -500,7 +511,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         untouched = set(failed)
 
     merged = merge(state, scraped, ok_sources, untouched, start,
-                   int(config.get("drop_after_days") or 14))
+                   int(config.get("drop_after_days") or 14),
+                   config.get("partial_sources") or {})
 
     listings = list(merged.values())
     detect_duplicates(listings)

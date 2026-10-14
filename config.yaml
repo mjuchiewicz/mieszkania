@@ -25,3 +25,12 @@ max_pages: 300
 
 # Po ilu dniach od zniknięcia z portali oferta wypada z listy
 drop_after_days: 14
+
+# Otodom blokuje częste pobieranie, więc co przebieg bierzemy tylko
+# najnowsze strony (obu rynków razem)...
+otodom_max_pages: 12
+
+# ...a jego oferty, których nie widzieliśmy, trzymamy na liście tyle dni
+# od ostatniego zobaczenia (bo mogły być po prostu na dalszej stronie).
+partial_sources:
+  otodom: 30

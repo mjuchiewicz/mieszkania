@@ -214,9 +214,11 @@ def scrape(config: dict) -> List[Listing]:
                 raise RuntimeError(
                     "nieruchomosci_online: brak kafelków ofert na 1. stronie — zmiana struktury "
                     f"strony lub blokada? URL: {resp.url}")
-            last_page = _last_page(soup)
         if not tiles:
             break
+        # Paginacja pokazuje tylko okno kilku stron dalej, więc "ostatnia strona"
+        # rośnie w miarę przechodzenia — odświeżamy ją na każdej stronie.
+        last_page = _last_page(soup)
         streets = _ld_streets(soup)
         new = 0
         for t in tiles:

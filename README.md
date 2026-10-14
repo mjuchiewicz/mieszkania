@@ -1,7 +1,7 @@
 # Mieszkania Wrocław 🏠
 
-Strona, która co 2 godziny sama zbiera oferty **sprzedaży mieszkań we Wrocławiu** z kilku portali
-(Otodom, OLX, Gratka, Morizon, Nieruchomosci-online, Domiporta) i pokazuje je w jednym miejscu.
+Strona, która co 4 godziny sama zbiera oferty **sprzedaży mieszkań we Wrocławiu** z kilku portali
+(Otodom, OLX, Gratka, Nieruchomosci-online, Domiporta) i pokazuje je w jednym miejscu.
 
 Na stronie możesz:
 
@@ -17,20 +17,21 @@ Ulubione, ukryte i obejrzane zapisują się tylko w Twojej przeglądarce (na tel
 
 ## Jak włączyć stronę (jednorazowo)
 
-1. Na GitHubie wejdź w repozytorium → **Settings** → **Pages**.
-2. W „Build and deployment” wybierz **Source: Deploy from a branch**, gałąź **main** i folder **/docs** → **Save**.
-3. Po minucie–dwóch strona będzie pod adresem `https://<twoja-nazwa>.github.io/<nazwa-repozytorium>/`.
-4. Sprawdź też **Settings → Actions → General → Workflow permissions**: ma być zaznaczone **Read and write permissions**
-   (żeby automat mógł zapisywać nowe oferty).
+Repozytorium jest prywatne, a strona stoi na [Vercel](https://vercel.com) (darmowy plan):
 
-Osobna akcja do publikacji nie jest potrzebna — GitHub Pages sam serwuje folder `docs`.
+1. Zaloguj się na vercel.com przez GitHuba → **Add New… → Project**.
+2. Przy **flat-scrapper** kliknij **Import** (jeśli go nie widać: „Adjust GitHub App Permissions” i dodaj to repo).
+3. **Root Directory** → **Edit** → wybierz `docs`. Framework Preset: **Other**. → **Deploy**.
+4. Adres strony znajdziesz w Vercel na górze projektu (np. `flat-scrapper-xyz.vercel.app`).
+
+Vercel sam publikuje nową wersję strony po każdej aktualizacji ofert.
 
 ## Ręczne pobranie ofert
 
 Zakładka **Actions** → po lewej **Pobieranie ofert** → przycisk **Run workflow** → **Run workflow**.
 Po kilku–kilkunastu minutach nowe dane pojawią się na stronie (czasem trzeba odświeżyć).
 
-Automatycznie dzieje się to co 2 godziny. Jeśli któryś portal nie zadziała, na stronie pojawi się
+Automatycznie dzieje się to co 4 godziny (tak, żeby zmieścić się w darmowym limicie minut GitHuba dla prywatnych repozytoriów). Jeśli któryś portal nie zadziała, na stronie pojawi się
 żółta informacja „⚠ portal nie działa”, a jego wcześniejsze oferty zostaną na liście.
 
 ## Zmiana ustawień
