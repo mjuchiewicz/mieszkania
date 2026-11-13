@@ -1,9 +1,9 @@
 {
   "city": "wroclaw",
   "city_name": "Wrocław",
-  "last_run": "2026-11-13T17:47:04Z",
+  "last_run": "2026-11-13T23:37:15Z",
   "first_run": "2026-10-13T21:21:33Z",
-  "finished": "2026-11-13T18:01:01Z",
+  "finished": "2026-11-13T23:51:37Z",
   "drop_after_days": 14,
   "enabled_deals": [
     "sprzedaz",
@@ -15,63 +15,63 @@
       "label": "Kupno",
       "file": "sprzedaz.json",
       "first_run": "2026-10-13T21:21:33Z",
-      "last_run": "2026-11-13T17:47:04Z",
-      "total": 21715,
-      "active": 18612,
-      "dup_groups": 3613,
+      "last_run": "2026-11-13T23:37:15Z",
+      "total": 21670,
+      "active": 18622,
+      "dup_groups": 3597,
       "geo": {
-        "brak": 201,
-        "dokładna": 7844,
-        "dzielnica": 729,
-        "osiedle": 1901,
-        "ulica": 11040
+        "brak": 202,
+        "dokładna": 7823,
+        "dzielnica": 708,
+        "osiedle": 1886,
+        "ulica": 11051
       },
       "sources": {
         "domiporta": {
-          "count": 2681,
-          "duration_s": 201.8,
-          "last_run": "2026-11-13T17:50:26Z",
+          "count": 2676,
+          "duration_s": 208.2,
+          "last_run": "2026-11-13T23:40:43Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:50:26Z",
+          "last_ok": "2026-11-13T23:40:43Z",
           "first_ok": "2026-10-13T21:21:33Z"
         },
         "gratka": {
-          "count": 6545,
-          "duration_s": 711.9,
-          "last_run": "2026-11-13T17:58:56Z",
+          "count": 6550,
+          "duration_s": 741.8,
+          "last_run": "2026-11-13T23:49:37Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:58:56Z",
+          "last_ok": "2026-11-13T23:49:37Z",
           "first_ok": "2026-10-13T21:21:33Z"
         },
         "nieruchomosci_online": {
-          "count": 4682,
-          "duration_s": 354.5,
-          "last_run": "2026-11-13T17:52:59Z",
+          "count": 4689,
+          "duration_s": 384.7,
+          "last_run": "2026-11-13T23:43:39Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:52:59Z",
+          "last_ok": "2026-11-13T23:43:39Z",
           "first_ok": "2026-10-13T21:21:33Z"
         },
         "olx": {
-          "count": 167,
+          "count": 0,
           "duration_s": 112.3,
           "last_run": "2026-11-13T13:42:50Z",
           "via": "komputer",
           "scraped_at": "2026-11-13T13:42:50Z",
-          "status": "ok",
-          "error": null,
+          "status": "stale",
+          "error": "dane z komputera sprzed 9 godz. (pobiera je komputer, gdy jest włączony)",
           "last_ok": "2026-11-13T13:42:50Z",
           "first_ok": "2026-10-13T21:21:33Z"
         },
         "otodom": {
           "count": 577,
-          "duration_s": 38.4,
-          "last_run": "2026-11-13T17:47:43Z",
+          "duration_s": 44.1,
+          "last_run": "2026-11-13T23:37:59Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:47:43Z",
+          "last_ok": "2026-11-13T23:37:59Z",
           "first_ok": "2026-10-13T21:21:33Z"
         }
       }
@@ -80,63 +80,63 @@
       "label": "Wynajem",
       "file": "wynajem.json",
       "first_run": "2026-10-14T09:56:12Z",
-      "last_run": "2026-11-13T17:47:04Z",
-      "total": 10212,
-      "active": 8621,
+      "last_run": "2026-11-13T23:37:15Z",
+      "total": 10199,
+      "active": 8600,
       "dup_groups": 1220,
       "geo": {
         "brak": 38,
-        "dokładna": 3218,
+        "dokładna": 3219,
         "dzielnica": 117,
-        "osiedle": 576,
-        "ulica": 6263
+        "osiedle": 577,
+        "ulica": 6248
       },
       "sources": {
         "domiporta": {
-          "count": 585,
-          "duration_s": 42.9,
-          "last_run": "2026-11-13T17:51:12Z",
+          "count": 583,
+          "duration_s": 41.3,
+          "last_run": "2026-11-13T23:41:27Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:51:12Z",
+          "last_ok": "2026-11-13T23:41:27Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "gratka": {
-          "count": 1038,
-          "duration_s": 98.1,
-          "last_run": "2026-11-13T18:00:37Z",
+          "count": 1034,
+          "duration_s": 100.2,
+          "last_run": "2026-11-13T23:51:20Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T18:00:37Z",
+          "last_ok": "2026-11-13T23:51:20Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "nieruchomosci_online": {
-          "count": 1245,
-          "duration_s": 92.6,
-          "last_run": "2026-11-13T17:54:34Z",
+          "count": 1243,
+          "duration_s": 105.6,
+          "last_run": "2026-11-13T23:45:28Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:54:34Z",
+          "last_ok": "2026-11-13T23:45:28Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "olx": {
-          "count": 1284,
+          "count": 0,
           "duration_s": 156.8,
           "last_run": "2026-11-13T13:45:31Z",
           "via": "komputer",
           "scraped_at": "2026-11-13T13:45:31Z",
-          "status": "ok",
-          "error": null,
+          "status": "stale",
+          "error": "dane z komputera sprzed 9 godz. (pobiera je komputer, gdy jest włączony)",
           "last_ok": "2026-11-13T13:45:31Z",
           "first_ok": "2026-10-14T09:56:12Z"
         },
         "otodom": {
           "count": 568,
-          "duration_s": 36.8,
-          "last_run": "2026-11-13T17:48:23Z",
+          "duration_s": 35.9,
+          "last_run": "2026-11-13T23:38:38Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:48:23Z",
+          "last_ok": "2026-11-13T23:38:38Z",
           "first_ok": "2026-10-14T10:18:10Z"
         }
       }
@@ -145,54 +145,54 @@
       "label": "Pokoje",
       "file": "pokoj.json",
       "first_run": "2026-10-14T09:56:12Z",
-      "last_run": "2026-11-13T17:47:04Z",
-      "total": 1288,
+      "last_run": "2026-11-13T23:37:15Z",
+      "total": 1289,
       "active": 999,
       "dup_groups": 11,
       "geo": {
         "brak": 1,
         "dokładna": 836,
         "dzielnica": 1,
-        "osiedle": 33,
-        "ulica": 417
+        "osiedle": 32,
+        "ulica": 419
       },
       "sources": {
         "gratka": {
           "count": 24,
-          "duration_s": 2.3,
-          "last_run": "2026-11-13T18:00:43Z",
+          "duration_s": 1.9,
+          "last_run": "2026-11-13T23:51:25Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T18:00:43Z",
+          "last_ok": "2026-11-13T23:51:25Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "nieruchomosci_online": {
-          "count": 38,
-          "duration_s": 4.1,
-          "last_run": "2026-11-13T17:54:41Z",
+          "count": 37,
+          "duration_s": 5.8,
+          "last_run": "2026-11-13T23:45:37Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:54:41Z",
+          "last_ok": "2026-11-13T23:45:37Z",
           "first_ok": "2026-10-14T10:18:10Z"
         },
         "olx": {
-          "count": 549,
+          "count": 0,
           "duration_s": 36.9,
           "last_run": "2026-11-13T13:46:11Z",
           "via": "komputer",
           "scraped_at": "2026-11-13T13:46:11Z",
-          "status": "ok",
-          "error": null,
+          "status": "stale",
+          "error": "dane z komputera sprzed 9 godz. (pobiera je komputer, gdy jest włączony)",
           "last_ok": "2026-11-13T13:46:11Z",
           "first_ok": "2026-10-14T09:56:12Z"
         },
         "otodom": {
-          "count": 127,
-          "duration_s": 7.1,
-          "last_run": "2026-11-13T17:48:33Z",
+          "count": 128,
+          "duration_s": 4.9,
+          "last_run": "2026-11-13T23:38:46Z",
           "status": "ok",
           "error": null,
-          "last_ok": "2026-11-13T17:48:33Z",
+          "last_ok": "2026-11-13T23:38:46Z",
           "first_ok": "2026-10-14T10:18:10Z"
         }
       }
